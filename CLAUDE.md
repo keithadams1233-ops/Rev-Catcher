@@ -87,9 +87,13 @@ substantial phases rather than cascading into the next one unprompted.
    premium-upgrade attachment + average ticket, all pure functions with a
    Vitest suite (`npm test`). Not wired to anything yet — no real POS data
    exists until Phase 5, and nothing calls it from a live route.
-   *(current state of this repo)*
-5. CSV import (upload → column mapping → validation → normalization →
-   dedupe by `external_transaction_id` → triggers metric recalculation).
+5. **CSV import** ✅ — Settings → Data Sources: upload → column mapping
+   (auto-guessed, reusable per org) → validation → normalization → dedupe
+   by `external_transaction_id` → writes `transactions`/`transaction_items`
+   → triggers metric recalculation (`src/lib/metrics/recalculate.ts`).
+   `src/lib/csv-import/` is environment-agnostic (client preview + server
+   authoritative re-validation share the same functions — never trust the
+   client's validation as final). *(current state of this repo)*
 6. Revenue leak engine (benchmark calc, gap, revenue/profit opportunity,
    confidence classification).
 7. Challenge engine (creation, participants, tiers, team goals, baseline,
@@ -114,7 +118,9 @@ substantial phases rather than cascading into the next one unprompted.
 - Database types are hand-written in `src/lib/types/database.ts`, mirroring
   `supabase/migrations/*.sql` exactly. Update both together. Regenerate for
   real once a live Supabase project exists
-  (`npx supabase gen types typescript`).
+  (`npx supabase gen types typescript`). Use the `Tables<'x'>` /
+  `Inserts<'x'>` / `Updates<'x'>` helpers exported from that file rather
+  than reaching into `Database["public"]["Tables"]["x"]["Row"]` by hand.
 - New tables: add the migration, add RLS policies in the same PR/commit,
   add the TS type, update `ARCHITECTURE.md`'s schema section.
 - **Manager screen data access goes through `src/lib/data/manager.ts`**,
@@ -139,6 +145,13 @@ substantial phases rather than cascading into the next one unprompted.
   anything with a formula in the spec) is a pure function with a Vitest
   suite next to it** (`*.test.ts` beside the module it tests — see
   `src/lib/metrics/`). Not a UI-only concern to eyeball; write the test.
+- **Validation/normalization logic that a client needs for live preview
+  and a server needs as the authoritative check is one environment-agnostic
+  module, not two.** `src/lib/csv-import/` has no Supabase client, no
+  Next.js — the upload wizard runs it client-side for instant preview, the
+  Server Action re-runs the exact same functions server-side and never
+  trusts the client's result. Reach for this pattern again anywhere else
+  a "preview before you commit" UI shows up.
 - Money: `numeric(12,2)`. Rates/percentages: `numeric(10,6)` stored as a
   0–1 fraction (display as `× 100` with a `%`). Points/XP: integers.
   Formatting helpers for all of this live in `src/lib/format.ts` — use them

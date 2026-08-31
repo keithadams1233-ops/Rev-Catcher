@@ -1,10 +1,10 @@
 # Architecture
 
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
-Phase 3 (Employee UI), and Phase 4 (Real Metric Engine). Sections
-describing engines that don't exist yet are marked "planned" — they
-document the design those phases will implement against, not what's
-running today.
+Phase 3 (Employee UI), Phase 4 (Real Metric Engine), and Phase 5 (CSV
+Import). Sections describing engines that don't exist yet are marked
+"planned" — they document the design those phases will implement against,
+not what's running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -132,6 +132,9 @@ Full DDL: `supabase/migrations/0001_initial_schema.sql`. Grouped by concern:
   `badges`, `employee_badges`.
 - **Rewards:** `reward_catalog`, `reward_redemptions`.
 - **Notifications:** `notifications`.
+- **CSV import config** (`0005_pos_column_mappings.sql`, Phase 5):
+  `pos_column_mappings` — one reusable column mapping per org (spec §19),
+  the one table added after the original schema.
 
 `supabase/migrations/0002_reference_data.sql` seeds the platform-level
 reference rows that aren't tenant-specific: the 6 `metric_definitions`, the
@@ -228,12 +231,15 @@ average_ticket   = mean(clean, non-outlier transaction totals)
 - **`category-rules.ts`** — default eligible/target category + modifier
   classification per detector. The spec asks for these to be
   manager-configurable (Detector 2: "Manager must be able to define which
-  categories/items count as add-ons") — deliberately **not** persisted yet;
-  every calculator takes the rule as a parameter rather than hardcoding it,
-  so wiring in a per-org override later (its natural home is the CSV
-  column-mapping flow, Phase 5 — that's where a manager's own category
-  taxonomy first enters the system) is a data-source change, not an engine
-  rewrite.
+  categories/items count as add-ons") — deliberately **still not**
+  persisted; every calculator takes the rule as a parameter rather than
+  hardcoding it, so a per-org override is a data-source change, not an
+  engine rewrite, whenever it's built. Phase 5 added the natural place for
+  it to live (the CSV column-mapping flow, since that's where a manager's
+  own category taxonomy first enters the system) without actually adding
+  the override itself — `transaction_items.category` is whatever string
+  the CSV's mapped category column contained, matched against these
+  defaults, same as before.
 - **`attachment.ts`** / **`average-ticket.ts`** — the two actual formulas.
   Four of the five detectors (beverage/dessert/add-on/premium-upgrade) are
   the *same* attachment-rate formula with a different `AttachmentRule`;
@@ -246,7 +252,15 @@ average_ticket   = mean(clean, non-outlier transaction totals)
   never knows what grain it's running at.
 - **`from-db.ts`** — the one place that maps real `transactions`/
   `transaction_items` rows into `EngineTransaction[]`. Pure reshaping, no
-  Supabase client — usable once Phase 5 has real rows to feed it.
+  Supabase client.
+- **`recalculate.ts`** (Phase 5) — the one piece of this module that
+  isn't pure: `recalculateMetricSnapshots(organizationId)` pulls every
+  transaction/item for the org via the service-role client, runs all five
+  detectors at every location and location+employee grain it finds, and
+  inserts a fresh batch of `metric_snapshots` rows. Called once at the end
+  of a successful CSV import (`src/app/manager/settings/data-sources/actions.ts`)
+  — see "CSV import" below for why recalculation runs over *all* of an
+  org's transactions rather than just the newly-imported batch.
 
 Every `MetricResult` carries its `denominator` (eligible transaction
 count) alongside `value` — that's what a future caller applies the
@@ -254,13 +268,91 @@ count) alongside `value` — that's what a future caller applies the
 against. The engine computes it; deciding a safe minimum and actually
 gating a leaderboard or a leak on it is Phase 6/7's job, not this one's.
 
-**Not wired to anything yet, on purpose:** nothing writes `metric_snapshots`
-from this engine, and nothing calls it from a live route. There's no real
-POS data for it to run against until Phase 5 (CSV import) exists, and
-deciding *when* recalculation runs (after each import? on a schedule?) is
-Phase 5/6's design question, not Phase 4's. Phase 4's job was the
-calculation itself, proven correct with tests — see
-`src/lib/metrics/*.test.ts` (`npm test`).
+**Real end-to-end as of Phase 5, still not surfaced anywhere as of Phase 6:**
+uploading a CSV now genuinely writes `transactions`/`transaction_items` and
+runs this engine over them into `metric_snapshots` — see `npm test` for the
+calculation logic and "CSV import" below for the pipeline. What's still
+missing is anything *reading* those snapshots: no screen displays them, and
+nothing compares them to a benchmark to produce a `revenue_leaks` row —
+that's Phase 6.
+
+## CSV import
+
+Spec §19's flow — upload → column mapping → validation → normalization →
+dedupe by `external_transaction_id` → triggers metric recalculation —
+implemented as the first (and for this MVP, only) `PosAdapter` (see "Future
+POS adapter design" below). `src/lib/csv-import/` is deliberately
+environment-agnostic, same reasoning as the metric engine: no Supabase
+client, no Next.js, so the exact same parse → map → validate → group
+functions run twice — once client-side in the upload wizard for the live
+preview, and again server-side in the Server Action as the *authoritative*
+check. The client's validation is a UX convenience; nothing about it is
+trusted.
+
+**A CSV row is one line item, not one transaction.** A real POS export
+lists `item_name`/`category`/`quantity`/`price` per row, with
+`transaction_id` as the only thing tying several rows into one order —
+matching the spec's own column list (§19). `price` is treated as that
+row's line total (not a per-unit price); `group-transactions.ts` derives
+everything the `transactions` table needs but the CSV never states
+directly: `subtotal` (sum of line totals), `total` (subtotal − discount,
+no tax column in this MVP), and — the one anti-gaming-relevant judgment
+call — `voided`/`refund_amount`. Void/refund are per-item in the CSV; a
+transaction is only marked `voided` if *every* item in it was voided (a
+single voided item off an otherwise-normal order is a partial void,
+staying at the item level — `transaction_items.voided` — so it still
+excludes just that item from attachment detection, not the whole order).
+`refund_amount` sums the line totals of whatever items were marked
+refunded.
+
+**Column mapping is per-org and reusable** (`pos_column_mappings`, added
+in `0005_pos_column_mappings.sql` — a table the original schema didn't
+have; new tables get a migration + RLS + TS type same as any other, per
+CLAUDE.md's convention). `guess-mapping.ts` proposes a first mapping from
+the file's own header names (exact match first, then substring, so a
+header containing another field's keyword doesn't steal it from a more
+precise match) before falling back to whatever the org saved last time;
+the manager reviews and can override before importing.
+
+**Location and employee resolution happens server-side, against real
+rows** — a CSV's location column is matched by name (case-insensitive)
+against the org's actual `locations`; an unresolvable location rejects
+the row with a specific error rather than silently dropping or
+auto-creating one (setting up locations is expected to happen before a
+pilot's first import, not implicitly via CSV). An employee identifier is
+matched by email first, then by "first last" name; if neither matches,
+the transaction still imports with `employee_id = null` rather than being
+rejected — spec §10 (Pilot Hardening) explicitly names "missing employee
+IDs" as an expected real-world case, and there's no reason to lose an
+otherwise-valid transaction over it.
+
+**Dedup is a pre-check, not a caught constraint violation.** The unique
+index from Phase 1 (`transactions(organization_id, external_transaction_id)`)
+is still there as a backstop, but the import action queries which
+candidate IDs already exist and skips them before inserting, so it can
+report an honest "N duplicates skipped" count rather than surfacing a
+batch-insert failure. Every write (`transactions`, `transaction_items`,
+`pos_imports`, `pos_column_mappings`, and the metric engine's
+`metric_snapshots`) goes through the service-role client — none of these
+tables have a client insert policy, by the same design as everything else
+server-written in this app (CLAUDE.md rule #3); the Server Action is
+responsible for its own authorization (manager role, `organization_id`
+sourced from the caller's own profile, never from the request payload).
+
+**Recalculation runs over the organization's entire transaction history,
+not just the newly-imported rows** — an attachment rate or average ticket
+is a rate over a period, not a per-batch number, so recomputing it from
+only the latest upload would silently discard everything imported before
+it. At pilot scale (thousands of transactions, not millions) re-scanning
+everything on every import is cheap enough that a smarter incremental
+approach isn't worth the complexity yet.
+
+**Pilot-scale constraint, stated rather than hidden:** the importer caps
+at 5,000 rows per upload (`MAX_ROWS` in the Server Action) and Next's
+Server Action body limit is raised to 8mb (`next.config.mjs`) to
+accommodate it — a deliberate MVP boundary for "fastest path to a working
+pilot," not an oversight. A larger export needs to be split; there's no
+chunked-upload path yet.
 
 ## Revenue leak detection (planned, Phase 6)
 
@@ -312,25 +404,32 @@ automation is Phase 7's job, once Phase 4's metric engine exists to feed it.
 
 ## Future POS adapter design (planned)
 
-CSV import (Phase 5) is designed as the first implementation of a
-`PosAdapter` interface, not a special case:
+CSV import (Phase 5) is built so that it *can* become the first of several
+POS adapters without a rewrite, without committing to a formal
+`PosAdapter` interface before there's a second real implementation to
+prove it against (one implementation is a poor teacher of what an
+interface should look like — YAGNI until Toast/Square/Clover actually
+exist). What's already true, concretely:
 
-```ts
-interface PosAdapter {
-  getLocations(): Promise<NormalizedLocation[]>;
-  getEmployees(): Promise<NormalizedEmployee[]>;
-  getTransactions(startDate: Date, endDate: Date): Promise<NormalizedTransaction[]>;
-  getCatalog(): Promise<NormalizedItem[]>;
-  normalizeTransaction(raw: unknown): NormalizedTransaction;
-}
-```
+- The importer's output is the metric engine's own input shape
+  (`EngineTransaction`/`EngineTransactionItem`, `src/lib/metrics/types.ts`)
+  by way of the same normalized fields every adapter would need to
+  produce: transaction ID, timestamp, location, employee, and line items
+  with category/quantity/price/void/refund. A future API-based adapter
+  needs to fill in these same fields, not learn a CSV-specific shape.
+- `src/lib/csv-import/` is already split into the parts that would differ
+  per source (`parse-csv.ts`, `map-rows.ts` — CSV-specific) from the parts
+  that wouldn't (`validate-row.ts`, `group-transactions.ts` — "is this row
+  usable" and "how do line items become a transaction" are POS-agnostic
+  questions). A `ToastAdapter` would replace the first two, reuse the
+  second two.
+- Every write path downstream (the metric engine, and eventually the leak
+  detector and challenge engine) only ever sees `transactions` /
+  `transaction_items` rows — none of them know or care that a CSV upload
+  produced today's rows instead of a webhook.
 
-`CsvAdapter` maps uploaded columns → this shape once, via a saved per-org
-mapping. Future `ToastAdapter` / `SquareAdapter` / `CloverAdapter` implement
-the same interface against their own APIs and feed the same
-`transactions` / `transaction_items` tables — the metric engine, leak
-detector, and challenge engine never need to know which adapter produced a
-row.
+Formalizing an actual `PosAdapter` interface is worth doing once a second
+source is being built, not before.
 
 ## Known trade-offs
 

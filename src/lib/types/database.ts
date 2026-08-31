@@ -945,9 +945,40 @@ export interface Database {
           created_at: string;
         }>
       >;
+
+      pos_column_mappings: Table<
+        {
+          id: string;
+          organization_id: string;
+          name: string;
+          mapping: Record<string, string | null>;
+          created_at: string;
+          updated_at: string;
+        },
+        {
+          id?: string;
+          organization_id: string;
+          name?: string;
+          mapping: Record<string, string | null>;
+          created_at?: string;
+          updated_at?: string;
+        },
+        Partial<{
+          id: string;
+          organization_id: string;
+          name: string;
+          mapping: Record<string, string | null>;
+          created_at: string;
+          updated_at: string;
+        }>
+      >;
     };
   };
 }
 
 export type Tables<T extends keyof Database["public"]["Tables"]> =
   Database["public"]["Tables"][T]["Row"];
+export type Inserts<T extends keyof Database["public"]["Tables"]> =
+  Database["public"]["Tables"][T]["Insert"];
+export type Updates<T extends keyof Database["public"]["Tables"]> =
+  Database["public"]["Tables"][T]["Update"];

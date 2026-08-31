@@ -535,3 +535,49 @@ export async function getOrganization(organizationId: string): Promise<Organizat
 // Reward catalog reads live in src/lib/data/rewards.ts (shared with the
 // employee Rewards screen — role-agnostic data, owned by neither module).
 export { listRewardCatalog, type RewardCatalogItem } from "@/lib/data/rewards";
+
+export interface PosImportSummary {
+  id: string;
+  filename: string;
+  status: Tables<"pos_imports">["status"];
+  importedAt: string;
+  dateStart: string | null;
+  dateEnd: string | null;
+  rowCount: number;
+  errorCount: number;
+}
+
+export async function listPosImports(organizationId: string): Promise<PosImportSummary[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("pos_imports")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("imported_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []).map((i) => ({
+    id: i.id,
+    filename: i.filename,
+    status: i.status,
+    importedAt: i.imported_at,
+    dateStart: i.date_start,
+    dateEnd: i.date_end,
+    rowCount: i.row_count,
+    errorCount: i.error_count,
+  }));
+}
+
+export async function getSavedColumnMapping(
+  organizationId: string,
+): Promise<Record<string, string | null> | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("pos_column_mappings")
+    .select("mapping")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.mapping ?? null;
+}

@@ -7,33 +7,38 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phases 1–4 are implemented**: Next.js + Supabase wiring, the full database
+**Phases 1–5 are implemented**: Next.js + Supabase wiring, the full database
 schema and RLS policies, authentication, role-based routing, a dev-only role
 switcher, the whole Rev Catcher manager experience (home, revenue leaks,
 goal builder, challenge tracking, people, settings), the whole Rev Rewards
 employee experience (home, missions, leaderboard, points wallet, rewards,
-XP/levels/streaks/badges), and the real metric engine (`src/lib/metrics/` —
+XP/levels/streaks/badges), the real metric engine (`src/lib/metrics/` —
 beverage/dessert/add-on/premium-upgrade attachment + average ticket, unit
-tested).
+tested), and CSV import (Settings → Data Sources: upload → column mapping →
+validation → transactions in the database → the metric engine re-run over
+them).
 
-Every screen reads real rows through Supabase (not mocks), but two engines
-that would *produce* those rows live from real POS data don't exist yet:
+Every screen reads real rows through Supabase (not mocks). One engine that
+would *produce* rows live still doesn't exist:
 
 - **Leak detection** (Phase 6) — so the 17 revenue leaks and the "Beverage
   Boost" challenge you'll see after seeding are hand-authored demo data
   reproducing the spec's example numbers, not something the app computed.
-  The metric engine itself (Phase 4) is real and tested; it just has no
-  live transactions to run against until Phase 5 (CSV import) exists, and
-  nothing has wired it into a route yet — that's Phase 6's job.
-- **The gamification engine** (Phase 8) — so points/XP/streaks/mission
-  progress are seeded starting values, not the result of a live shift.
+  Uploading real POS data (Phase 5) now genuinely populates `transactions`
+  and `metric_snapshots` — what's still missing is the job that would read
+  those snapshots, compare them to a benchmark, and write `revenue_leaks`
+  rows from the result.
+- **The gamification engine** (Phase 8) — points/XP/streaks/mission
+  progress are still seeded starting values; nothing yet turns "an
+  employee completed a mission" or "a challenge tier was crossed" from
+  live data into a ledger write.
 
-Two flows *are* real writes, not mockups, because they only need the
-manager's or employee's own session, not a missing engine: the goal builder
-launches an actual challenge (`challenges`/`challenge_tiers`/
-`challenge_participants`/`notifications` rows), and redeeming a reward
-actually spends the employee's real point balance (checked server-side
-before the write).
+Three flows *are* real writes, not mockups: the goal builder launches an
+actual challenge (`challenges`/`challenge_tiers`/`challenge_participants`/
+`notifications` rows), redeeming a reward actually spends the employee's
+real point balance (checked server-side before the write), and CSV import
+actually inserts `transactions`/`transaction_items` and re-runs the metric
+engine over them.
 
 ## Stack
 
@@ -82,6 +87,8 @@ Migrations live in `supabase/migrations/`, in order:
    `profiles` bootstrap trigger.
 4. `0004_rls_policies.sql` — Row Level Security for every tenant-scoped
    table.
+5. `0005_pos_column_mappings.sql` — reusable per-org CSV column mappings
+   (Phase 5).
 
 Apply them with the [Supabase CLI](https://supabase.com/docs/guides/cli):
 
@@ -133,6 +140,19 @@ Open [http://localhost:3000](http://localhost:3000). Signed-out visitors go
 to `/login`; signed-in users are routed automatically to `/manager` or
 `/employee` based on their role.
 
+### Try CSV import
+
+Sign in as the manager, go to **Settings → Data Sources**, and upload
+[`samples/pos-export-sample.csv`](samples/pos-export-sample.csv) — a small
+POS export already using the seeded demo locations and employee emails, so
+every row resolves cleanly. Its headers ("Order ID", "Store", "Cashier",
+etc.) also match the auto-mapping guesser's keywords, so the mapping step
+should come up pre-filled. After import, check `/manager/leaks` — nothing
+changes there yet (leak *detection*, Phase 6, doesn't exist), but the
+transactions are real rows now and the metric engine has re-run over them
+(`pos_imports` → Data Sources page shows the import; `metric_snapshots`
+rows exist per location/employee, even with no UI reading them yet).
+
 ### Dev-only role switcher
 
 While `NODE_ENV !== "production"`, a **Manager view / Employee view** toggle
@@ -171,7 +191,8 @@ src/
   app/
     login/            sign-in page + server actions
     manager/           Rev Catcher screens (role-gated) — home, leaks, leaks/[id],
-                         goals (list + [id] + new builder), people, settings
+                         goals (list + [id] + new builder), people, settings,
+                         settings/data-sources (CSV import wizard + history)
     employee/          Rev Rewards screens (role-gated) — home, missions, ranks,
                          points, rewards (+ the reward-redemption server action)
     page.tsx            role-based landing redirect
@@ -194,8 +215,11 @@ src/
     challenges/            deterministic goal-builder recommendation math
     gamification/          level/XP formula + streak milestone math (spec §15)
     metrics/                the real metric engine (spec §7) — pure functions +
-                           *.test.ts beside each module (`npm test`); not wired
-                           into any route yet, see ARCHITECTURE.md
+                           *.test.ts beside each module (`npm test`); recalculate.ts
+                           is the one piece that writes to the database
+    csv-import/             CSV parsing/mapping/validation/grouping (spec §19) —
+                           pure functions, environment-agnostic (client preview +
+                           authoritative server-side re-validation both use these)
     format.ts              currency/percent/confidence formatting, shared everywhere
     dev/                   dev-view cookie helper
     types/database.ts     hand-written Supabase Database type
@@ -205,6 +229,9 @@ scripts/
   seed.ts                 demo data: org, locations, revenue leaks, the
                            "Beverage Boost" challenge, and every seeded
                            employee's level/XP/streak/points/badges/missions
+samples/
+  pos-export-sample.csv    a small POS export for trying CSV import against
+                           the seeded demo org — see "Try CSV import" above
 ```
 
 See `ARCHITECTURE.md` for the tenant model, schema relationships, and the

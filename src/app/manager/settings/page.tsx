@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getCurrentProfile } from "@/lib/auth/get-current-profile";
 import { getOrganization, listLocations, listRewardCatalog } from "@/lib/data/manager";
 import { formatCurrency } from "@/lib/format";
@@ -94,10 +95,19 @@ export default async function SettingsPage() {
         </p>
       </section>
 
-      <section className="rounded-2xl border border-dashed border-manager-border p-4">
-        <h2 className="text-sm font-semibold text-manager-text">Data Sources</h2>
+      <section className="rounded-2xl border border-manager-border bg-manager-surface p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-manager-text">Data Sources</h2>
+          <Link
+            href="/manager/settings/data-sources"
+            className="rounded-lg bg-manager-accent px-3 py-1.5 text-xs font-semibold text-manager-bg"
+          >
+            Upload POS CSV
+          </Link>
+        </div>
         <p className="mt-2 text-sm text-manager-muted">
-          Upload POS CSV, map columns, and re-import updated data — ships in Phase 5 (CSV Import).
+          Upload POS CSV exports, map columns to Rev Catcher&apos;s fields, and re-import updated data any time —
+          already-imported transactions are skipped automatically.
         </p>
       </section>
     </div>

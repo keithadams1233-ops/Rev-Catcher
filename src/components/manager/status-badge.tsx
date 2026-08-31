@@ -8,6 +8,9 @@ const STATUS_STYLES: Record<string, string> = {
   challenge_created: "border-manager-accent/50 text-manager-accent",
   dismissed: "border-manager-border text-manager-muted",
   resolved: "border-manager-accent/50 text-manager-accent",
+  uploaded: "border-manager-border text-manager-muted",
+  processing: "border-manager-warn/50 text-manager-warn",
+  failed: "border-manager-danger/50 text-manager-danger",
 };
 
 const STATUS_LABELS: Record<string, string> = {
