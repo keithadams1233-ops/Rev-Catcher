@@ -93,9 +93,15 @@ substantial phases rather than cascading into the next one unprompted.
    → triggers metric recalculation (`src/lib/metrics/recalculate.ts`).
    `src/lib/csv-import/` is environment-agnostic (client preview + server
    authoritative re-validation share the same functions — never trust the
-   client's validation as final). *(current state of this repo)*
-6. Revenue leak engine (benchmark calc, gap, revenue/profit opportunity,
-   confidence classification).
+   client's validation as final).
+6. **Revenue leak engine** ✅ — `src/lib/revenue-leaks/`: benchmark calc
+   (top-quartile vs. org-average per spec §7), gap, revenue/profit
+   opportunity (matches spec §8's worked example exactly as a test),
+   confidence classification. `detect.ts` reads `metric_snapshots` and
+   upserts `revenue_leaks` — run automatically after CSV import and
+   manually via "Detect Leaks" on `/manager/leaks`. Manager-configurable
+   category rules and contribution margins are still just defaults, not
+   persisted — same deferral as Phase 4. *(current state of this repo)*
 7. Challenge engine (creation, participants, tiers, team goals, baseline,
    progress updates, rankings, completion).
 8. Gamification engine (points, XP, levels, streaks, daily missions,

@@ -1,10 +1,10 @@
 # Architecture
 
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
-Phase 3 (Employee UI), Phase 4 (Real Metric Engine), and Phase 5 (CSV
-Import). Sections describing engines that don't exist yet are marked
-"planned" — they document the design those phases will implement against,
-not what's running today.
+Phase 3 (Employee UI), Phase 4 (Real Metric Engine), Phase 5 (CSV
+Import), and Phase 6 (Revenue Leak Engine). Sections describing engines
+that don't exist yet are marked "planned" — they document the design
+those phases will implement against, not what's running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -265,16 +265,19 @@ average_ticket   = mean(clean, non-outlier transaction totals)
 Every `MetricResult` carries its `denominator` (eligible transaction
 count) alongside `value` — that's what a future caller applies the
 "minimum eligible transactions before ranking anyone" rule (spec §16)
-against. The engine computes it; deciding a safe minimum and actually
-gating a leaderboard or a leak on it is Phase 6/7's job, not this one's.
+against. The engine computes it; a safe minimum for *ranking* someone is
+still Phase 7's job (see "Revenue leak detection" below for the minimum
+this engine's own output is now gated on for *leak reporting*, which
+Phase 6 does implement).
 
-**Real end-to-end as of Phase 5, still not surfaced anywhere as of Phase 6:**
-uploading a CSV now genuinely writes `transactions`/`transaction_items` and
-runs this engine over them into `metric_snapshots` — see `npm test` for the
-calculation logic and "CSV import" below for the pipeline. What's still
-missing is anything *reading* those snapshots: no screen displays them, and
-nothing compares them to a benchmark to produce a `revenue_leaks` row —
-that's Phase 6.
+**Real end-to-end as of Phase 6**: uploading a CSV writes
+`transactions`/`transaction_items`, this engine runs over them into
+`metric_snapshots`, and the revenue leak engine (below) reads those
+snapshots into real `revenue_leaks` rows — see `npm test` for the
+calculation logic. What's still missing is a screen that reads
+`metric_snapshots` directly (a location's current-vs-benchmark trend
+line, say) — the Leaks screens read `revenue_leaks`, which is the
+computed *result*, not the raw snapshots themselves.
 
 ## CSV import
 
@@ -345,7 +348,11 @@ is a rate over a period, not a per-batch number, so recomputing it from
 only the latest upload would silently discard everything imported before
 it. At pilot scale (thousands of transactions, not millions) re-scanning
 everything on every import is cheap enough that a smarter incremental
-approach isn't worth the complexity yet.
+approach isn't worth the complexity yet. Metric recalculation is
+immediately followed by revenue leak detection (spec §19 step 8 — see
+"Revenue leak detection" below), so a successful import can turn directly
+into new or updated `revenue_leaks` rows without any extra manager
+action.
 
 **Pilot-scale constraint, stated rather than hidden:** the importer caps
 at 5,000 rows per upload (`MAX_ROWS` in the Server Action) and Next's
@@ -354,7 +361,11 @@ accommodate it — a deliberate MVP boundary for "fastest path to a working
 pilot," not an oversight. A larger export needs to be split; there's no
 chunked-upload path yet.
 
-## Revenue leak detection (planned, Phase 6)
+## Revenue leak detection
+
+Spec §7-9, `src/lib/revenue-leaks/` — pure functions (same discipline as
+the metric engine: no AI, unit-tested, deterministic), plus one impure
+job (`detect.ts`) that reads `metric_snapshots` and writes `revenue_leaks`.
 
 ```
 gap = benchmark_value - current_value
@@ -362,19 +373,68 @@ estimated_incremental_revenue = eligible_transactions_per_month × gap × avg_at
 estimated_contribution_profit = estimated_incremental_revenue × category_margin
 ```
 
-Benchmark source is chosen by data availability: top-performing-quartile of
-comparable locations when there's enough of them, else organization average
-(spec §7). `confidence_score` reflects sample size and benchmark quality —
-surfaced to managers (via `ConfidenceBadge`) as High/Medium/Low, never as a
-guarantee. **Not implemented yet** — the `revenue_leaks` rows the Leaks
-screens read today are hand-authored demo data (`scripts/seed.ts`)
-reproducing the spec's example numbers exactly ($47,820 / $28,340 / 17
-leaks), not something this formula computed. The Leaks/leak-detail UI is
-real and phase-complete; `current_value` now has a real engine behind it
-(`src/lib/metrics/`, Phase 4) — what Phase 6 adds is the benchmark
-selection, the gap/revenue/profit arithmetic above, confidence
-classification, and a job that actually runs the engine against real
-transactions and writes `revenue_leaks` rows from the result.
+- **`benchmark.ts`** — spec §7's two-tier MVP default: top-performing
+  quartile (`≥4` comparable locations, 75th percentile via the same
+  `percentile()` the metric engine's outlier fencing uses —
+  `src/lib/stats.ts`) or organization average (2-3 locations). Returns
+  `null` — no leak possible — with fewer than 2 locations reporting that
+  metric; there's no third tier for spec §7's "historical location
+  baseline" option yet.
+- **`contribution-margins.ts`** — default per-metric margin assumptions,
+  matching what `scripts/seed.ts` used for the hand-authored demo leaks
+  exactly (beverage 70%, dessert 68%, add-on 65%, premium-upgrade 60%,
+  average ticket 55%) so real detection and the seeded numbers agree on
+  what a category's margin means. Manager-configurable per spec §8 —
+  **not persisted**, same deferral as `category-rules.ts` (Phase 4):
+  every function takes a margin as a parameter, defaulting to this table.
+- **`opportunity.ts`** — the formula above, spot-checked against the
+  spec's own §8 worked example as a literal test case (10,000 eligible
+  transactions, 28%→36%, $3.50 avg beverage sale → exactly $2,800
+  revenue / $1,960 profit at a 70% margin). `average_ticket` is already a
+  dollar metric, so its gap *is* the per-transaction opportunity — the
+  `avg_attached_item_price` term is dropped for that one metric rather
+  than double-counted. `extrapolateEligiblePerMonth` scales a snapshot's
+  actual period (whatever data exists) to the spec's monthly figure.
+- **`confidence.ts`** — a 0-1 score averaging two things: sample size
+  (the snapshot's `denominator`, capped at `FULL_CONFIDENCE_SAMPLE_SIZE`
+  = 100) and benchmark quality (how many locations fed it). Bucketed into
+  High/Medium/Low for display by `confidenceLabel()`
+  (`src/lib/format.ts`) — never a guarantee, per spec §5/§25.
+- **`detect.ts`** (server-only) — reads each location's *latest*
+  location-level `metric_snapshot` per metric (employee-level snapshots
+  aren't benchmarked against each other; only locations are "comparable"
+  per spec §7), computes a benchmark across all locations reporting that
+  metric, and for each location below it with ≥3 eligible transactions
+  (`MIN_DENOMINATOR_TO_REPORT` — a sample thinner than that isn't worth
+  reporting at all, confidence score or not) resolves an average
+  attached-item price from that location's own clean `transaction_items`
+  and computes the opportunity. **This average-price lookup is a
+  simplification**: it filters `transaction_items.voided`/`.refunded`
+  directly rather than also checking the parent transaction's void/refund
+  status the way the metric engine's `isCleanTransaction` does — a
+  reasonable approximation for an *estimate* input, not the core rate
+  calculation itself (which Phase 4's tested engine still owns).
+  `revenue_leaks` is one row per (organization, location, metric) —
+  **updated in place** across detection runs, not appended, so a leak's
+  status (`open` → `challenge_created` → `dismissed`/`resolved`) survives
+  a re-run: a leak already acted on is never overwritten with fresh
+  numbers, and an `open` leak whose location catches up to benchmark
+  auto-resolves instead of sitting there with a stale zero gap.
+
+**Wired to two triggers**: automatically at the end of a successful CSV
+import, right after metric recalculation (spec §19 step 8 —
+`src/app/manager/settings/data-sources/actions.ts`), and manually via a
+"Detect Leaks" button on `/manager/leaks`
+(`src/app/manager/leaks/actions.ts`) for re-running without a new upload.
+
+**What this means for the demo data**: the 17 hand-authored leaks from
+`scripts/seed.ts` (open, not backed by real transactions) and real
+detection now coexist by design, not by accident — if a manager uploads
+real POS data for a location/metric that already has a seeded `open`
+leak, detection overwrites it with real computed numbers; the Store #37
+beverage-attachment leak that already became the "Beverage Boost"
+challenge (`status = challenge_created`) is left untouched either way,
+same as any other leak a manager has already acted on.
 
 ## Challenge engine
 

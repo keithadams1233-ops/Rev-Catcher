@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   CSV_TARGET_FIELDS,
@@ -276,6 +277,15 @@ export function ImportWizard({ savedMapping }: { savedMapping: ColumnMapping | n
               </dd>
             </div>
           </dl>
+          {(result.leaksCreated > 0 || result.leaksUpdated > 0 || result.leaksResolved > 0) && (
+            <p className="mt-3 text-xs text-manager-muted">
+              Revenue leak detection: {result.leaksCreated} new, {result.leaksUpdated} updated,{" "}
+              {result.leaksResolved} resolved.{" "}
+              <Link href="/manager/leaks" className="font-medium text-manager-accent hover:underline">
+                View leaks
+              </Link>
+            </p>
+          )}
         </div>
 
         {result.errors.length > 0 && (

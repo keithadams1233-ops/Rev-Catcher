@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getCurrentProfile, isManagerRole } from "@/lib/auth/get-current-profile";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { recalculateMetricSnapshots } from "@/lib/metrics/recalculate";
+import { detectRevenueLeaks } from "@/lib/revenue-leaks/detect";
 import {
   applyMapping,
   validateRows,
@@ -35,6 +36,9 @@ export interface ImportCsvResult {
   errors: RowError[];
   errorsTruncated: boolean;
   snapshotsWritten: number;
+  leaksCreated: number;
+  leaksUpdated: number;
+  leaksResolved: number;
 }
 
 /**
@@ -155,6 +159,9 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     );
 
     let snapshotsWritten = 0;
+    let leaksCreated = 0;
+    let leaksUpdated = 0;
+    let leaksResolved = 0;
 
     if (transactionsToInsert.length > 0) {
       const { data: insertedTx, error: insertTxError } = await supabase
@@ -195,6 +202,12 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
 
       const recalcResult = await recalculateMetricSnapshots(organizationId);
       snapshotsWritten = recalcResult.snapshotsWritten;
+
+      // spec §19 step 8: CSV import triggers leak detection too.
+      const detectionResult = await detectRevenueLeaks(organizationId);
+      leaksCreated = detectionResult.leaksCreated;
+      leaksUpdated = detectionResult.leaksUpdated;
+      leaksResolved = detectionResult.leaksResolved;
     }
 
     const timestamps = [...resolved.values()].map((r) => r.group.timestamp);
@@ -229,6 +242,9 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
         errors: rowErrors.slice(0, MAX_ERRORS_RETURNED),
         errorsTruncated: rowErrors.length > MAX_ERRORS_RETURNED,
         snapshotsWritten,
+        leaksCreated,
+        leaksUpdated,
+        leaksResolved,
       },
     };
   } catch (err) {

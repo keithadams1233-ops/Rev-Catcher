@@ -1,3 +1,4 @@
+import { percentile } from "@/lib/stats";
 import type { EngineTransaction, EngineTransactionItem } from "./types";
 
 /**
@@ -36,15 +37,4 @@ export function excludeOutliers(values: number[]): number[] {
   const upperBound = q3 + 1.5 * iqr;
 
   return values.filter((v) => v >= lowerBound && v <= upperBound);
-}
-
-/** Linear-interpolation percentile over an already-sorted array. */
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 1) return sorted[0];
-  const index = p * (sorted.length - 1);
-  const lower = Math.floor(index);
-  const upper = Math.ceil(index);
-  if (lower === upper) return sorted[lower];
-  const weight = index - lower;
-  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
 }

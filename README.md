@@ -7,38 +7,43 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phases 1–5 are implemented**: Next.js + Supabase wiring, the full database
+**Phases 1–6 are implemented**: Next.js + Supabase wiring, the full database
 schema and RLS policies, authentication, role-based routing, a dev-only role
 switcher, the whole Rev Catcher manager experience (home, revenue leaks,
 goal builder, challenge tracking, people, settings), the whole Rev Rewards
 employee experience (home, missions, leaderboard, points wallet, rewards,
 XP/levels/streaks/badges), the real metric engine (`src/lib/metrics/` —
 beverage/dessert/add-on/premium-upgrade attachment + average ticket, unit
-tested), and CSV import (Settings → Data Sources: upload → column mapping →
+tested), CSV import (Settings → Data Sources: upload → column mapping →
 validation → transactions in the database → the metric engine re-run over
-them).
+them), and the revenue leak engine (`src/lib/revenue-leaks/` — benchmark
+calc, gap, revenue/profit opportunity, confidence classification, all unit
+tested against the spec's own worked example).
 
-Every screen reads real rows through Supabase (not mocks). One engine that
-would *produce* rows live still doesn't exist:
+Every screen reads real rows through Supabase (not mocks). The 17 revenue
+leaks and the "Beverage Boost" challenge you'll see after seeding are still
+hand-authored demo data reproducing the spec's example numbers — but
+uploading real POS data now runs the *entire* pipeline for real: CSV import
+→ transactions → metric snapshots → benchmark comparison → new/updated
+`revenue_leaks` rows, with the same seeded leaks getting overwritten with
+real numbers if a manager uploads data covering their location/metric (a
+leak already turned into a challenge is left alone either way — see
+ARCHITECTURE.md).
 
-- **Leak detection** (Phase 6) — so the 17 revenue leaks and the "Beverage
-  Boost" challenge you'll see after seeding are hand-authored demo data
-  reproducing the spec's example numbers, not something the app computed.
-  Uploading real POS data (Phase 5) now genuinely populates `transactions`
-  and `metric_snapshots` — what's still missing is the job that would read
-  those snapshots, compare them to a benchmark, and write `revenue_leaks`
-  rows from the result.
+One engine is still not real:
+
 - **The gamification engine** (Phase 8) — points/XP/streaks/mission
   progress are still seeded starting values; nothing yet turns "an
   employee completed a mission" or "a challenge tier was crossed" from
   live data into a ledger write.
 
-Three flows *are* real writes, not mockups: the goal builder launches an
+Four flows *are* real writes, not mockups: the goal builder launches an
 actual challenge (`challenges`/`challenge_tiers`/`challenge_participants`/
 `notifications` rows), redeeming a reward actually spends the employee's
-real point balance (checked server-side before the write), and CSV import
+real point balance (checked server-side before the write), CSV import
 actually inserts `transactions`/`transaction_items` and re-runs the metric
-engine over them.
+engine over them, and revenue leak detection actually reads the result
+and writes `revenue_leaks`.
 
 ## Stack
 
@@ -140,18 +145,29 @@ Open [http://localhost:3000](http://localhost:3000). Signed-out visitors go
 to `/login`; signed-in users are routed automatically to `/manager` or
 `/employee` based on their role.
 
-### Try CSV import
+### Try CSV import (and real leak detection)
 
 Sign in as the manager, go to **Settings → Data Sources**, and upload
 [`samples/pos-export-sample.csv`](samples/pos-export-sample.csv) — a small
 POS export already using the seeded demo locations and employee emails, so
 every row resolves cleanly. Its headers ("Order ID", "Store", "Cashier",
 etc.) also match the auto-mapping guesser's keywords, so the mapping step
-should come up pre-filled. After import, check `/manager/leaks` — nothing
-changes there yet (leak *detection*, Phase 6, doesn't exist), but the
-transactions are real rows now and the metric engine has re-run over them
-(`pos_imports` → Data Sources page shows the import; `metric_snapshots`
-rows exist per location/employee, even with no UI reading them yet).
+should come up pre-filled. The import result shows metric snapshots written
+and how many leaks were created/updated/resolved.
+
+With only ~12 rows across 2 locations, treat whatever comes back as a
+correctness demo, not a realistic result — any leak that does appear will
+be Low confidence (too little sample, too few comparable locations,
+exactly the anti-gaming floors in `src/lib/revenue-leaks/` working as
+intended), and some metrics may report nothing at all if fewer than 2
+locations have data for them. What's real either way: `transactions`/
+`transaction_items` rows exist, `metric_snapshots` were computed by the
+Phase 4 engine, and detection ran an actual benchmark comparison across
+whatever locations reported each metric. Upload a larger export (more
+locations, more transactions per location) for results that mean
+something, or click **Detect Leaks** on `/manager/leaks` any time to
+re-run detection against whatever data currently exists without
+uploading again.
 
 ### Dev-only role switcher
 
@@ -190,9 +206,10 @@ local setup (steps 4–5) before the first deploy goes live.
 src/
   app/
     login/            sign-in page + server actions
-    manager/           Rev Catcher screens (role-gated) — home, leaks, leaks/[id],
-                         goals (list + [id] + new builder), people, settings,
-                         settings/data-sources (CSV import wizard + history)
+    manager/           Rev Catcher screens (role-gated) — home, leaks (+ leaks/[id]
+                         and a manual Detect Leaks trigger), goals (list + [id] +
+                         new builder), people, settings, settings/data-sources
+                         (CSV import wizard + history)
     employee/          Rev Rewards screens (role-gated) — home, missions, ranks,
                          points, rewards (+ the reward-redemption server action)
     page.tsx            role-based landing redirect
@@ -220,6 +237,11 @@ src/
     csv-import/             CSV parsing/mapping/validation/grouping (spec §19) —
                            pure functions, environment-agnostic (client preview +
                            authoritative server-side re-validation both use these)
+    revenue-leaks/          benchmark/opportunity/confidence math (spec §7-9),
+                           pure + tested; detect.ts writes revenue_leaks, the
+                           one non-pure piece, run after every CSV import
+    stats.ts                percentile()/mean(), shared by outlier fencing and
+                           the top-quartile benchmark
     format.ts              currency/percent/confidence formatting, shared everywhere
     dev/                   dev-view cookie helper
     types/database.ts     hand-written Supabase Database type
@@ -234,6 +256,5 @@ samples/
                            the seeded demo org — see "Try CSV import" above
 ```
 
-See `ARCHITECTURE.md` for the tenant model, schema relationships, and the
-engines (metric, challenge, gamification) that later phases build on this
-foundation.
+See `ARCHITECTURE.md` for the tenant model, schema relationships, and how
+each engine (metric, revenue leak, challenge, gamification) fits together.

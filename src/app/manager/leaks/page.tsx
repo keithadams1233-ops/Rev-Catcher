@@ -1,6 +1,7 @@
 import { getCurrentProfile } from "@/lib/auth/get-current-profile";
 import { listLeaks, listLocations } from "@/lib/data/manager";
 import { LeaksExplorer } from "@/components/manager/leaks-explorer";
+import { DetectLeaksButton } from "@/components/manager/detect-leaks-button";
 import { PhaseStub } from "@/components/phase-stub";
 
 export default async function RevenueLeaksPage() {
@@ -25,11 +26,14 @@ export default async function RevenueLeaksPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold text-manager-text">Revenue Leaks</h1>
-        <p className="text-sm text-manager-muted">
-          Estimated opportunities, sorted by contribution profit by default.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-manager-text">Revenue Leaks</h1>
+          <p className="text-sm text-manager-muted">
+            Estimated opportunities, sorted by contribution profit by default.
+          </p>
+        </div>
+        <DetectLeaksButton />
       </div>
       <LeaksExplorer leaks={leaks} locations={locations} metricCodes={metricCodes} />
     </div>
