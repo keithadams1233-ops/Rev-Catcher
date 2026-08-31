@@ -7,20 +7,24 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phases 1–3 are implemented**: Next.js + Supabase wiring, the full database
+**Phases 1–4 are implemented**: Next.js + Supabase wiring, the full database
 schema and RLS policies, authentication, role-based routing, a dev-only role
 switcher, the whole Rev Catcher manager experience (home, revenue leaks,
-goal builder, challenge tracking, people, settings), and the whole Rev
-Rewards employee experience (home, missions, leaderboard, points wallet,
-rewards, XP/levels/streaks/badges).
+goal builder, challenge tracking, people, settings), the whole Rev Rewards
+employee experience (home, missions, leaderboard, points wallet, rewards,
+XP/levels/streaks/badges), and the real metric engine (`src/lib/metrics/` —
+beverage/dessert/add-on/premium-upgrade attachment + average ticket, unit
+tested).
 
 Every screen reads real rows through Supabase (not mocks), but two engines
-that would *produce* those rows live don't exist yet:
+that would *produce* those rows live from real POS data don't exist yet:
 
-- **Leak detection** (Phase 6) and the **metric engine** (Phase 4) — so the
-  17 revenue leaks and the "Beverage Boost" challenge you'll see after
-  seeding are hand-authored demo data reproducing the spec's example
-  numbers, not something the app computed.
+- **Leak detection** (Phase 6) — so the 17 revenue leaks and the "Beverage
+  Boost" challenge you'll see after seeding are hand-authored demo data
+  reproducing the spec's example numbers, not something the app computed.
+  The metric engine itself (Phase 4) is real and tested; it just has no
+  live transactions to run against until Phase 5 (CSV import) exists, and
+  nothing has wired it into a route yet — that's Phase 6's job.
 - **The gamification engine** (Phase 8) — so points/XP/streaks/mission
   progress are seeded starting values, not the result of a live shift.
 
@@ -144,6 +148,8 @@ in a production build.
 npm run lint    # ESLint
 npm run build   # production build (also type-checks)
 npm run start   # run a production build locally
+npm test        # Vitest — the metric engine's unit tests
+npm run test:watch   # same, in watch mode
 ```
 
 ## Deployment (Vercel)
@@ -187,6 +193,9 @@ src/
       rewards.ts             reward catalog reads (role-agnostic — used by both)
     challenges/            deterministic goal-builder recommendation math
     gamification/          level/XP formula + streak milestone math (spec §15)
+    metrics/                the real metric engine (spec §7) — pure functions +
+                           *.test.ts beside each module (`npm test`); not wired
+                           into any route yet, see ARCHITECTURE.md
     format.ts              currency/percent/confidence formatting, shared everywhere
     dev/                   dev-view cookie helper
     types/database.ts     hand-written Supabase Database type

@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
@@ -31,6 +33,7 @@
     "tailwindcss": "^3.4.10",
     "typescript": "^5",
     "tsx": "^4.19.1",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "vitest": "^4.1.11"
   }
 }

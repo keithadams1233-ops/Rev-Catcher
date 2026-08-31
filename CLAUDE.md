@@ -82,9 +82,12 @@ substantial phases rather than cascading into the next one unprompted.
    XP, levels, streaks, badges. Reads through `src/lib/data/employee.ts`
    against real rows; reward redemption is a real write (validated
    service-role server action, spending an employee's actual point
-   balance). *(current state of this repo)*
-4. Real metric engine (beverage/dessert/add-on attachment, average ticket,
-   premium upgrade) + unit tests.
+   balance).
+4. **Real metric engine** ✅ — `src/lib/metrics/`: beverage/dessert/add-on/
+   premium-upgrade attachment + average ticket, all pure functions with a
+   Vitest suite (`npm test`). Not wired to anything yet — no real POS data
+   exists until Phase 5, and nothing calls it from a live route.
+   *(current state of this repo)*
 5. CSV import (upload → column mapping → validation → normalization →
    dedupe by `external_transaction_id` → triggers metric recalculation).
 6. Revenue leak engine (benchmark calc, gap, revenue/profit opportunity,
@@ -130,8 +133,12 @@ substantial phases rather than cascading into the next one unprompted.
 - If a Supabase query starts typing its result as `never`, check
   `@supabase/ssr`'s version before anything else — see ARCHITECTURE.md's
   "Known trade-offs" for what happened last time.
-- Run `npm run lint` and `npm run build` before considering any phase done;
-  fix failures rather than skipping them.
+- Run `npm run lint`, `npm run build`, and `npm test` before considering any
+  phase done; fix failures rather than skipping them.
+- **Deterministic business logic (metric formulas, gamification math,
+  anything with a formula in the spec) is a pure function with a Vitest
+  suite next to it** (`*.test.ts` beside the module it tests — see
+  `src/lib/metrics/`). Not a UI-only concern to eyeball; write the test.
 - Money: `numeric(12,2)`. Rates/percentages: `numeric(10,6)` stored as a
   0–1 fraction (display as `× 100` with a `%`). Points/XP: integers.
   Formatting helpers for all of this live in `src/lib/format.ts` — use them

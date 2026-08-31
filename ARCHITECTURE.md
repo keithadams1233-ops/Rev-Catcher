@@ -1,9 +1,10 @@
 # Architecture
 
-Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI), and
-Phase 3 (Employee UI). Sections describing engines that don't exist yet are
-marked "planned" — they document the design those phases will implement
-against, not what's running today.
+Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
+Phase 3 (Employee UI), and Phase 4 (Real Metric Engine). Sections
+describing engines that don't exist yet are marked "planned" — they
+document the design those phases will implement against, not what's
+running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -204,19 +205,62 @@ twice for one redemption.
 day) — those all come from hand-seeded demo data today. Phase 8 is what
 wires real POS-driven progress into these tables automatically.
 
-## Metric engine (planned, Phase 4)
+## Metric engine
 
-Deterministic, not AI — every detector is a ratio computed from
-`transactions` / `transaction_items`:
+Deterministic, not AI (spec §7) — `src/lib/metrics/` is a set of pure,
+unit-tested TypeScript functions, not SQL, computing all five detectors:
 
 ```
-attachment_rate = eligible_transactions_with_target_item / eligible_transactions
+attachment_rate = eligible_transactions_with_target_item / eligible_transactions   (beverage/add-on/dessert/premium-upgrade)
+average_ticket   = mean(clean, non-outlier transaction totals)
 ```
 
-computed at employee, location, and organization level into
-`metric_snapshots`. Exclusions (voids, refunds, outlier tickets) are applied
-at the SQL/query level before the ratio, not after — see spec §16
-(anti-gaming rules) and §7 (detector definitions).
+- **`types.ts`** — `EngineTransaction`/`EngineTransactionItem`, decoupled
+  from the Supabase `Database` row shape on purpose: the engine takes plain
+  data, so it's testable without a database and so a future POS adapter
+  (Toast/Square/Clover) only has to normalize into this shape, same as the
+  CSV importer will.
+- **`eligibility.ts`** — the anti-gaming rules (spec §16) as their own
+  tested functions: `isCleanTransaction`/`isCleanItem` reject anything
+  touched by a void or *any* refund (even partial — never a reduced-value
+  count), and `excludeOutliers` IQR-fences average-ticket inputs (only once
+  there's ≥8 data points; below that, "outlier" is just noise).
+- **`category-rules.ts`** — default eligible/target category + modifier
+  classification per detector. The spec asks for these to be
+  manager-configurable (Detector 2: "Manager must be able to define which
+  categories/items count as add-ons") — deliberately **not** persisted yet;
+  every calculator takes the rule as a parameter rather than hardcoding it,
+  so wiring in a per-org override later (its natural home is the CSV
+  column-mapping flow, Phase 5 — that's where a manager's own category
+  taxonomy first enters the system) is a data-source change, not an engine
+  rewrite.
+- **`attachment.ts`** / **`average-ticket.ts`** — the two actual formulas.
+  Four of the five detectors (beverage/dessert/add-on/premium-upgrade) are
+  the *same* attachment-rate formula with a different `AttachmentRule`;
+  average ticket is its own calculation.
+- **`aggregate.ts`** / **`index.ts`** — `computeMetric(metricCode, txns)`
+  dispatches to the right detector; `computeMetricByEmployee` /
+  `computeMetricByLocation` / `computeMetricForOrganization` are the
+  employee/location/org-level rollups spec §7 asks for, built by grouping
+  transactions before calling the same detector — the detector itself
+  never knows what grain it's running at.
+- **`from-db.ts`** — the one place that maps real `transactions`/
+  `transaction_items` rows into `EngineTransaction[]`. Pure reshaping, no
+  Supabase client — usable once Phase 5 has real rows to feed it.
+
+Every `MetricResult` carries its `denominator` (eligible transaction
+count) alongside `value` — that's what a future caller applies the
+"minimum eligible transactions before ranking anyone" rule (spec §16)
+against. The engine computes it; deciding a safe minimum and actually
+gating a leaderboard or a leak on it is Phase 6/7's job, not this one's.
+
+**Not wired to anything yet, on purpose:** nothing writes `metric_snapshots`
+from this engine, and nothing calls it from a live route. There's no real
+POS data for it to run against until Phase 5 (CSV import) exists, and
+deciding *when* recalculation runs (after each import? on a schedule?) is
+Phase 5/6's design question, not Phase 4's. Phase 4's job was the
+calculation itself, proven correct with tests — see
+`src/lib/metrics/*.test.ts` (`npm test`).
 
 ## Revenue leak detection (planned, Phase 6)
 
@@ -234,8 +278,11 @@ guarantee. **Not implemented yet** — the `revenue_leaks` rows the Leaks
 screens read today are hand-authored demo data (`scripts/seed.ts`)
 reproducing the spec's example numbers exactly ($47,820 / $28,340 / 17
 leaks), not something this formula computed. The Leaks/leak-detail UI is
-real and phase-complete; the arithmetic that's supposed to populate the
-table is what Phase 6 adds.
+real and phase-complete; `current_value` now has a real engine behind it
+(`src/lib/metrics/`, Phase 4) — what Phase 6 adds is the benchmark
+selection, the gap/revenue/profit arithmetic above, confidence
+classification, and a job that actually runs the engine against real
+transactions and writes `revenue_leaks` rows from the result.
 
 ## Challenge engine
 
