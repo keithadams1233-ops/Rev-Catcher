@@ -1,8 +1,39 @@
 # Architecture
 
-Status: reflects Phase 1 (Project Foundation). Sections describing engines
-that don't exist yet are marked as such — they document the design those
-phases will implement against, not what's running today.
+Status: reflects Phase 1 (Project Foundation) and Phase 2 (Manager UI).
+Sections describing engines that don't exist yet are marked "planned" — they
+document the design those phases will implement against, not what's running
+today.
+
+## Manager data-access layer (Phase 2)
+
+Every manager screen reads through `src/lib/data/manager.ts` — server-only
+functions (`import "server-only"` enforces this at build time) that take the
+caller's `organizationId`, sourced from their own profile server-side, and
+filter on it explicitly on top of RLS. Each one does 2-3 plain queries and
+zips the results in TypeScript rather than using PostgREST's embedded-resource
+`select("*, locations(name)")` syntax — our hand-written `Database` type
+(`src/lib/types/database.ts`) sets every table's `Relationships` to `[]`
+since it's maintained by hand, not generated from a live schema, so
+postgrest-js can't type-check an embedded select against it reliably. At
+this data volume (tens of rows, not thousands) the extra round-trip is free;
+switching to embedded selects (or regenerating real types from a live
+project) is a fine optimization later, not a correctness requirement now.
+
+The goal builder (`/manager/goals/new`) is the one place Phase 2 writes,
+not just reads: launching a challenge (`src/app/manager/goals/new/actions.ts`)
+inserts `challenges` → `challenge_tiers` → optionally `team_goals` →
+`challenge_participants` (one per employee at the leak's location) →
+`notifications`, then flips the source `revenue_leaks.status` to
+`challenge_created` — all through the manager's own RLS-scoped session
+(no service-role client involved; the existing "managers can write" RLS
+policies from Phase 1 are what actually authorize each insert). This is
+sequential inserts, not one Postgres transaction — a real `BEGIN`/`COMMIT`
+would need a `plpgsql` RPC function, which is worth adding once Phase 7
+formalizes the challenge engine, but isn't necessary for a single manager
+launching a challenge through the UI today. Every financial number
+(projected revenue/profit) is recomputed server-side from the leak row the
+server just re-fetched, not trusted from the client payload.
 
 ## Tenant model
 
@@ -164,18 +195,39 @@ estimated_contribution_profit = estimated_incremental_revenue × category_margin
 Benchmark source is chosen by data availability: top-performing-quartile of
 comparable locations when there's enough of them, else organization average
 (spec §7). `confidence_score` reflects sample size and benchmark quality —
-surfaced to managers as High/Medium/Low, never as a guarantee.
+surfaced to managers (via `ConfidenceBadge`) as High/Medium/Low, never as a
+guarantee. **Not implemented yet** — the `revenue_leaks` rows the Leaks
+screens read today are hand-authored demo data (`scripts/seed.ts`)
+reproducing the spec's example numbers exactly ($47,820 / $28,340 / 17
+leaks), not something this formula computed. The Leaks/leak-detail UI is
+real and phase-complete; the arithmetic that's supposed to populate the
+table is what Phase 6 adds.
 
-## Challenge engine (planned, Phase 7)
+## Challenge engine
+
+Schema and UI are real as of Phase 2; the *automated* pieces (metric-driven
+progress updates, tier/ranking recalculation as new POS data lands,
+completion + ROI measurement) are still Phase 7/9. What exists now:
 
 `challenges` → `challenge_tiers` (points per threshold) → `challenge_participants`
 (one row per employee, baseline/current/best value + points earned) →
 optional `team_goals` (location-wide threshold, flat bonus to everyone on
-completion if hit). Launching a challenge: creates `challenge_participants`
-for every employee at the location, snapshots `baseline_value` from current
-`metric_snapshots`, and fires a `new_challenge` notification — all in one
-server-side transaction so employees never see a challenge without also
+completion if hit). The goal builder
+(`src/app/manager/goals/new/actions.ts`) launches a challenge for real:
+creates `challenge_participants` for every employee at the location
+(baseline = the leak's `current_value` — there's no per-employee metric
+snapshot to seed a real individual baseline from until Phase 4 exists),
+fires a `new_challenge` notification per participant, and flips the source
+leak to `challenge_created`, all sequentially through the manager's own
+RLS-scoped session (see "Manager data-access layer" above for why this
+isn't one DB transaction yet). Employees never see a challenge without also
 seeing their baseline.
+
+Progress *tracking* — a participant's `current_value` moving as real
+transactions come in, `rank` being recalculated, `team_goals.current_value`
+updating — has no automated writer yet; those columns only get sensible
+values today from the hand-seeded demo challenge ("Beverage Boost"). That
+automation is Phase 7's job, once Phase 4's metric engine exists to feed it.
 
 ## Future POS adapter design (planned)
 
@@ -199,7 +251,7 @@ the same interface against their own APIs and feed the same
 detector, and challenge engine never need to know which adapter produced a
 row.
 
-## Known trade-offs (Phase 1)
+## Known trade-offs
 
 - **Next.js 15.5.x, not 14.x.** `create-next-app` defaults to Next 16 in
   this environment; 16's API surface isn't reliably in this assistant's
@@ -218,3 +270,20 @@ row.
   redemption for more points than the ledger sums to); that's a
   server-side RPC, built alongside the Rewards screen in Phase 8, not a
   raw `insert` RLS policy.
+- **`@supabase/ssr` must stay reasonably current.** Pinning it to an older
+  release (`^0.5.x`) against a freshly-installed, much newer
+  `@supabase/supabase-js` broke typed queries outright — every
+  `.select()` through `createClient()`/`createServerClient()` resolved to
+  `never`, because `@supabase/ssr`'s bundled `GenericSchema` type (pulled
+  from `@supabase/supabase-js/dist/module/lib/types`) no longer matched
+  the installed `postgrest-js`'s actual shape (`Relationships` field,
+  `Views`/`Functions` on the schema object). Bumping to `^0.12.0` fixed it
+  immediately — if this resurfaces after a `supabase-js` bump, check
+  `@supabase/ssr`'s version first before suspecting the hand-written
+  `Database` type.
+- **Manager screens do 2-3 sequential queries instead of one PostgREST
+  embedded select.** See "Manager data-access layer" above — same root
+  cause category (our hand-written `Database` type's empty
+  `Relationships` arrays don't give postgrest-js enough to type-check an
+  embed), worked around by not using embeds rather than by further
+  fighting the types.

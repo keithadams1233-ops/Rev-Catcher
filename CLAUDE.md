@@ -62,12 +62,14 @@ implement → run lint/build → fix failures → summarize → stop for
 substantial phases rather than cascading into the next one unprompted.
 
 1. **Project foundation** ✅ — Next.js/TS/Tailwind/Supabase, full schema +
-   RLS, auth, role routing, dev role switcher, seed script. *(current state
-   of this repo)*
-2. Manager UI (home, leaks, leak detail, goal builder, active challenge,
-   people, settings) — against seed data, screens still stubbed.
+   RLS, auth, role routing, dev role switcher, seed script.
+2. **Manager UI** ✅ — home, revenue leaks (list + detail), goal builder
+   (launches real challenges), goals list + active challenge detail, people
+   roster, settings. Reads through `src/lib/data/manager.ts` against real
+   rows; the leaks/challenge *data itself* is still hand-seeded demo data,
+   not computed (that's Phases 4 & 6). *(current state of this repo)*
 3. Employee UI (home, missions, leaderboard, points wallet, rewards, XP,
-   levels, streaks, badges) — against seed data.
+   levels, streaks, badges) — against seed data. Still stubbed.
 4. Real metric engine (beverage/dessert/add-on attachment, average ticket,
    premium upgrade) + unit tests.
 5. CSV import (upload → column mapping → validation → normalization →
@@ -99,7 +101,22 @@ substantial phases rather than cascading into the next one unprompted.
   (`npx supabase gen types typescript`).
 - New tables: add the migration, add RLS policies in the same PR/commit,
   add the TS type, update `ARCHITECTURE.md`'s schema section.
+- **Manager screen data access goes through `src/lib/data/manager.ts`**
+  (server-only, `organizationId` always sourced server-side). Add the
+  equivalent `src/lib/data/employee.ts` when Phase 3 needs it — same
+  pattern, own file, don't mix manager and employee reads in one module.
+- **Don't use PostgREST embedded selects** (`.select("*, locations(name)")`)
+  against our hand-written `Database` type — its `Relationships` arrays are
+  all `[]`, so postgrest-js can't type-check the embed. Do two plain
+  queries and zip them in TS instead (see any function in
+  `src/lib/data/manager.ts`). This goes away once real generated types
+  exist.
+- If a Supabase query starts typing its result as `never`, check
+  `@supabase/ssr`'s version before anything else — see ARCHITECTURE.md's
+  "Known trade-offs" for what happened last time.
 - Run `npm run lint` and `npm run build` before considering any phase done;
   fix failures rather than skipping them.
 - Money: `numeric(12,2)`. Rates/percentages: `numeric(10,6)` stored as a
   0–1 fraction (display as `× 100` with a `%`). Points/XP: integers.
+  Formatting helpers for all of this live in `src/lib/format.ts` — use them
+  rather than re-deriving `toFixed`/`Intl.NumberFormat` calls per screen.

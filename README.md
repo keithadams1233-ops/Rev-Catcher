@@ -7,12 +7,22 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phase 1 — Project Foundation** is what's implemented right now: Next.js +
-Supabase wiring, the full database schema and RLS policies, authentication,
-role-based routing, and a dev-only role switcher. The manager and employee
-screens are navigable but intentionally show "not yet built" placeholders —
-Phase 2 onward fills those in with real functionality on top of this
-foundation.
+**Phase 1 (Project Foundation)** and **Phase 2 (Manager UI)** are implemented:
+Next.js + Supabase wiring, the full database schema and RLS policies,
+authentication, role-based routing, a dev-only role switcher, and the whole
+Rev Catcher manager experience — home, revenue leaks (list + detail), the
+challenge/goal builder, active challenge tracking, a people roster, and
+settings. The **Rev Rewards employee screens** still show "not yet built"
+placeholders — Phase 3 fills those in.
+
+The manager screens read real rows through Supabase (not mocks), but the
+*leak detection* itself (Phase 6) and the *metric engine* (Phase 4) don't
+exist yet — so the 17 revenue leaks and the "Beverage Boost" challenge you'll
+see after seeding are hand-authored demo data reproducing the spec's example
+numbers, not something the app computed. Launching a *new* challenge from one
+of those leaks, however, is real: the goal builder writes actual
+`challenges`/`challenge_tiers`/`challenge_participants`/`notifications` rows
+through the manager's own RLS-scoped session.
 
 ## Stack
 
@@ -75,22 +85,30 @@ aren't using the CLI.
 
 ### 5. Seed demo data
 
-The Phase 1 seed creates one organization, two locations, a manager account,
-and an employee account — just enough to log in and see role-based routing
-and RLS work end to end. (The full 14-location / 267-employee / 90-day demo
-dataset from the spec depends on the metric engine and leak detector, which
-land in later phases — seeding it now would just be numbers nothing computes.)
-
 ```bash
 npm run seed
 ```
 
-Demo accounts (password for both: `RevCatcher123!`):
+Creates "ABC Restaurant Holdings" with 5 locations, 17 revenue leaks
+(summing to the spec's $47,820 / $28,340 headline numbers), and the active
+"Beverage Boost" challenge at Store #37 with a 7-person leaderboard — safe to
+re-run, every insert is existence-checked. (The full 14-location /
+267-employee / 90-day dataset from spec §20 — and Sarah's own Rev Rewards
+stats like her points balance and level — wait on the metric and
+gamification engines, Phases 4 and 8, that would actually produce them.)
+
+Demo accounts (password for all: `RevCatcher123!`):
 
 | Role | Email |
 | --- | --- |
 | Owner (manager experience) | `manager@revcatcher.demo` |
-| Employee (Rev Rewards experience) | `sarah@revcatcher.demo` |
+| Employee — rank 1 | `kevin@revcatcher.demo` |
+| Employee — rank 2 | `ana@revcatcher.demo` |
+| Employee — rank 3 | `diego@revcatcher.demo` |
+| Employee — rank 4 | `sarah@revcatcher.demo` |
+| Employee — rank 5 | `priya@revcatcher.demo` |
+| Employee — rank 6 | `marcus@revcatcher.demo` |
+| Employee — rank 7 | `jamal@revcatcher.demo` |
 
 ### 6. Run the app
 
@@ -137,24 +155,30 @@ local setup (steps 4–5) before the first deploy goes live.
 src/
   app/
     login/            sign-in page + server actions
-    manager/           Rev Catcher shell, nav, and pages (role-gated)
-    employee/          Rev Rewards shell, nav, and pages (role-gated)
+    manager/           Rev Catcher screens (role-gated) — home, leaks, leaks/[id],
+                         goals (list + [id] + new builder), people, settings
+    employee/          Rev Rewards shell, nav, and pages (role-gated) — still stubs
     page.tsx            role-based landing redirect
     dev-role-switch-actions.ts   dev-only view override
   components/
-    manager/            manager nav (sidebar + bottom nav)
+    manager/            manager nav + screen building blocks (stat cards, leak
+                         cards, the goal builder, progress bars, status badges)
     rewards/             employee bottom nav
     dev-role-switcher.tsx
     phase-stub.tsx        "not yet built" placeholder used by future-phase screens
   lib/
     supabase/            browser/server/service-role Supabase clients + middleware
     auth/                 current-profile helper
+    data/manager.ts       server-only read layer for every manager screen
+    challenges/            deterministic goal-builder recommendation math
+    format.ts              currency/percent/confidence formatting, shared everywhere
     dev/                   dev-view cookie helper
     types/database.ts     hand-written Supabase Database type
 supabase/
   migrations/            SQL migrations, applied in filename order
 scripts/
-  seed.ts                 Phase 1 foundation seed
+  seed.ts                 demo data: org, locations, revenue leaks, the
+                           "Beverage Boost" challenge and its leaderboard
 ```
 
 See `ARCHITECTURE.md` for the tenant model, schema relationships, and the
