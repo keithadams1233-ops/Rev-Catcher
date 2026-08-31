@@ -532,32 +532,6 @@ export async function getOrganization(organizationId: string): Promise<Organizat
   };
 }
 
-export interface RewardCatalogItem {
-  id: string;
-  name: string;
-  description: string | null;
-  pointCost: number;
-  dollarValue: number;
-  isOrgSpecific: boolean;
-}
-
-export async function listRewardCatalog(organizationId: string): Promise<RewardCatalogItem[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("reward_catalog")
-    .select("*")
-    .or(`organization_id.is.null,organization_id.eq.${organizationId}`)
-    .eq("active", true)
-    .order("point_cost", { ascending: true });
-
-  if (error) throw error;
-
-  return (data ?? []).map((r) => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    pointCost: r.point_cost,
-    dollarValue: r.dollar_value,
-    isOrgSpecific: r.organization_id !== null,
-  }));
-}
+// Reward catalog reads live in src/lib/data/rewards.ts (shared with the
+// employee Rewards screen — role-agnostic data, owned by neither module).
+export { listRewardCatalog, type RewardCatalogItem } from "@/lib/data/rewards";

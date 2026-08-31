@@ -110,6 +110,119 @@ const CHALLENGE_TIERS = [
   { name: "Level 3", thresholdValue: 0.42, pointsAwarded: 2500, rankOrder: 3 },
 ];
 
+// --- Phase 3 (Employee UI / Rev Rewards) gamification seed -----------------
+//
+// Level/XP math mirrors src/lib/gamification/levels.ts exactly (kept as a
+// literal copy here since this script runs standalone via tsx, outside the
+// app's module graph) — current_xp is always < xpForLevel(level), and
+// lifetime_xp is always cumulativeXpForLevel(level) + current_xp, so the
+// seeded employee_levels row and the xp_ledger rows that back it agree by
+// construction. targetPoints is the final point_ledger SUM(points) for that
+// employee — reached by inserting real "earn" rows first (challenge tiers,
+// completed missions) then closing the gap with one adjustment row
+// representing pre-pilot history, never by inventing a stored balance.
+function xpForLevel(level: number): number {
+  return 500 + level * 100;
+}
+function cumulativeXpForLevel(level: number): number {
+  let total = 0;
+  for (let l = 1; l < level; l++) total += xpForLevel(l);
+  return total;
+}
+
+const GAMIFICATION: Record<string, { level: number; currentXp: number; streak: number; targetPoints: number }> = {
+  "kevin@revcatcher.demo": { level: 15, currentXp: 1450, streak: 8, targetPoints: 9200 },
+  "ana@revcatcher.demo": { level: 13, currentXp: 1200, streak: 9, targetPoints: 8900 },
+  "diego@revcatcher.demo": { level: 9, currentXp: 850, streak: 4, targetPoints: 7600 },
+  // Sarah's points balance (8,450) and streak (11 days) are the spec's §20
+  // example numbers, hit exactly; her level/XP progress uses the level
+  // formula (see levels.ts for why that diverges from the spec's "4,280 /
+  // 5,000" flavor text while still landing on its "720 XP to next level").
+  "sarah@revcatcher.demo": { level: 12, currentXp: 980, streak: 11, targetPoints: 8450 },
+  "priya@revcatcher.demo": { level: 7, currentXp: 300, streak: 2, targetPoints: 6200 },
+  "marcus@revcatcher.demo": { level: 6, currentXp: 640, streak: 0, targetPoints: 5100 },
+  "jamal@revcatcher.demo": { level: 5, currentXp: 210, streak: 1, targetPoints: 4300 },
+};
+
+const DAILY_MISSIONS = [
+  {
+    title: "First 5 Wins",
+    description: "Attach a beverage to 5 eligible orders.",
+    metricCode: "beverage_attachment",
+    targetValue: 5,
+    rewardType: "xp" as const,
+    rewardAmount: 150,
+  },
+  {
+    title: "Perfect Hour",
+    description: "Maintain 50%+ beverage attachment over 10 eligible transactions.",
+    metricCode: "beverage_attachment",
+    targetValue: 0.5,
+    rewardType: "points" as const,
+    rewardAmount: 200,
+  },
+  {
+    title: "Climb One Spot",
+    description: "Move up one leaderboard position.",
+    metricCode: null,
+    targetValue: 1,
+    rewardType: "points" as const,
+    rewardAmount: 300,
+  },
+];
+
+// current_value / completed per employee per mission. Kevin and Ana have
+// already completed "First 5 Wins" (Kevin also "Perfect Hour") — everyone
+// else is still in progress, matching the spec's own "3 / 5" example for
+// the employee who hasn't finished yet.
+const MISSION_PROGRESS: Record<string, Record<string, { current: number; completed: boolean }>> = {
+  "kevin@revcatcher.demo": {
+    "First 5 Wins": { current: 5, completed: true },
+    "Perfect Hour": { current: 0.54, completed: true },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "ana@revcatcher.demo": {
+    "First 5 Wins": { current: 5, completed: true },
+    "Perfect Hour": { current: 0.38, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "diego@revcatcher.demo": {
+    "First 5 Wins": { current: 2, completed: false },
+    "Perfect Hour": { current: 0.31, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "sarah@revcatcher.demo": {
+    "First 5 Wins": { current: 3, completed: false },
+    "Perfect Hour": { current: 0.42, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "priya@revcatcher.demo": {
+    "First 5 Wins": { current: 1, completed: false },
+    "Perfect Hour": { current: 0.22, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "marcus@revcatcher.demo": {
+    "First 5 Wins": { current: 0, completed: false },
+    "Perfect Hour": { current: 0.15, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+  "jamal@revcatcher.demo": {
+    "First 5 Wins": { current: 1, completed: false },
+    "Perfect Hour": { current: 0.19, completed: false },
+    "Climb One Spot": { current: 0, completed: false },
+  },
+};
+
+// badge code -> emails that qualify, given the data above (level >= 10,
+// streak >= 7, completed >= 1 mission). Challenge-outcome badges
+// (top_3/challenge_winner/team_player) wait for a completed challenge —
+// Beverage Boost is still active — so they're not awarded here.
+const BADGE_AWARDS: Record<string, string[]> = {
+  level_10: ["kevin@revcatcher.demo", "ana@revcatcher.demo", "sarah@revcatcher.demo"],
+  hot_streak: ["kevin@revcatcher.demo", "ana@revcatcher.demo", "sarah@revcatcher.demo"],
+  fast_starter: ["kevin@revcatcher.demo", "ana@revcatcher.demo"],
+};
+
 async function main() {
   console.log(`Seeding "${ORG_NAME}"...`);
 
@@ -130,13 +243,34 @@ async function main() {
   const flagshipLeakId = await ensureFlagshipLeak(organizationId, locationIds, FLAGSHIP_LEAK);
   await ensureSupportingLeaks(organizationId, locationIds, SUPPORTING_LEAKS);
 
-  await ensureChallenge(
+  const challengeId = await ensureChallenge(
     organizationId,
     locationIds["Store #37"],
     flagshipLeakId,
     managerId,
     employeeIds,
   );
+
+  for (const [email, id] of Object.entries(employeeIds)) {
+    const g = GAMIFICATION[email];
+    await ensureEmployeeLevel(id, g.level, g.currentXp);
+    await ensureStreak(id, g.streak);
+  }
+
+  const missionIds = await ensureDailyMissions(organizationId, locationIds["Store #37"], challengeId);
+  await ensureMissionProgress(organizationId, missionIds, employeeIds);
+
+  for (const [badgeCode, emails] of Object.entries(BADGE_AWARDS)) {
+    for (const email of emails) {
+      await ensureBadge(employeeIds[email], badgeCode);
+    }
+  }
+
+  for (const [email, id] of Object.entries(employeeIds)) {
+    const g = GAMIFICATION[email];
+    await ensurePointsBalance(organizationId, id, g.targetPoints);
+    await ensureXpBalance(organizationId, id, cumulativeXpForLevel(g.level) + g.currentXp);
+  }
 
   console.log("\nSeed complete. Demo accounts (password for all: %s):", DEMO_PASSWORD);
   console.log(`  ${"owner".padEnd(8)} ${MANAGER.email}`);
@@ -457,6 +591,316 @@ async function ensureChallenge(
 
   console.log(`  seeded ${ranked.length} challenge participants, tiers, team goal, and notifications`);
   return challengeId;
+}
+
+async function ensureEmployeeLevel(employeeId: string, level: number, currentXp: number) {
+  const { data: existing, error: selectError } = await admin
+    .from("employee_levels")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return;
+
+  const lifetimeXp = cumulativeXpForLevel(level) + currentXp;
+  const { error } = await admin.from("employee_levels").insert({
+    employee_id: employeeId,
+    current_level: level,
+    current_xp: currentXp,
+    lifetime_xp: lifetimeXp,
+  });
+
+  if (error) throw error;
+}
+
+async function ensureStreak(employeeId: string, currentStreak: number) {
+  const { data: existing, error: selectError } = await admin
+    .from("streaks")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("streak_type", "participation")
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const { error } = await admin.from("streaks").insert({
+    employee_id: employeeId,
+    streak_type: "participation",
+    current_streak: currentStreak,
+    longest_streak: currentStreak,
+    last_qualified_date: currentStreak > 0 ? today : null,
+  });
+
+  if (error) throw error;
+}
+
+async function ensureDailyMissions(
+  organizationId: string,
+  store37Id: string,
+  challengeId: string,
+): Promise<Record<string, string>> {
+  const activeDate = new Date().toISOString().slice(0, 10);
+  const missionIds: Record<string, string> = {};
+
+  for (const mission of DAILY_MISSIONS) {
+    const { data: existing, error: selectError } = await admin
+      .from("daily_missions")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("location_id", store37Id)
+      .eq("title", mission.title)
+      .eq("active_date", activeDate)
+      .maybeSingle();
+
+    if (selectError) throw selectError;
+
+    if (existing) {
+      missionIds[mission.title] = existing.id;
+      continue;
+    }
+
+    const { data, error } = await admin
+      .from("daily_missions")
+      .insert({
+        organization_id: organizationId,
+        challenge_id: challengeId,
+        location_id: store37Id,
+        title: mission.title,
+        description: mission.description,
+        metric_code: mission.metricCode,
+        target_value: mission.targetValue,
+        reward_type: mission.rewardType,
+        reward_amount: mission.rewardAmount,
+        active_date: activeDate,
+      })
+      .select("id")
+      .single();
+
+    if (error) throw error;
+    missionIds[mission.title] = data.id;
+  }
+
+  console.log(`  ensured ${DAILY_MISSIONS.length} daily missions`);
+  return missionIds;
+}
+
+async function ensureMissionProgress(
+  organizationId: string,
+  missionIds: Record<string, string>,
+  employeeIds: Record<string, string>,
+) {
+  for (const [email, progressByMission] of Object.entries(MISSION_PROGRESS)) {
+    const employeeId = employeeIds[email];
+    if (!employeeId) continue;
+
+    for (const [title, progress] of Object.entries(progressByMission)) {
+      const missionId = missionIds[title];
+
+      const { data: existing, error: selectError } = await admin
+        .from("employee_mission_progress")
+        .select("id")
+        .eq("mission_id", missionId)
+        .eq("employee_id", employeeId)
+        .maybeSingle();
+
+      if (selectError) throw selectError;
+      if (existing) continue;
+
+      const { error } = await admin.from("employee_mission_progress").insert({
+        mission_id: missionId,
+        employee_id: employeeId,
+        current_value: progress.current,
+        completed: progress.completed,
+        reward_issued: progress.completed,
+      });
+      if (error) throw error;
+
+      if (progress.completed) {
+        const mission = DAILY_MISSIONS.find((m) => m.title === title)!;
+        if (mission.rewardType === "xp") {
+          await insertXpLedgerIfMissing(
+            organizationId,
+            employeeId,
+            "mission",
+            missionId,
+            mission.rewardAmount,
+            `${title} completed`,
+          );
+        } else {
+          await insertPointLedgerIfMissing(
+            organizationId,
+            employeeId,
+            "earn",
+            "mission",
+            missionId,
+            mission.rewardAmount,
+            `${title} completed`,
+          );
+        }
+      }
+    }
+  }
+}
+
+async function insertXpLedgerIfMissing(
+  organizationId: string,
+  employeeId: string,
+  sourceType: string,
+  sourceId: string,
+  xp: number,
+  description: string,
+) {
+  const { data: existing, error: selectError } = await admin
+    .from("xp_ledger")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("source_type", sourceType)
+    .eq("source_id", sourceId)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return;
+
+  const { error } = await admin.from("xp_ledger").insert({
+    organization_id: organizationId,
+    employee_id: employeeId,
+    source_type: sourceType,
+    source_id: sourceId,
+    xp,
+    description,
+  });
+  if (error) throw error;
+}
+
+async function insertPointLedgerIfMissing(
+  organizationId: string,
+  employeeId: string,
+  transactionType: "earn" | "redeem" | "adjustment" | "reversal",
+  sourceType: string,
+  sourceId: string,
+  points: number,
+  description: string,
+) {
+  const { data: existing, error: selectError } = await admin
+    .from("point_ledger")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("source_type", sourceType)
+    .eq("source_id", sourceId)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return;
+
+  const { error } = await admin.from("point_ledger").insert({
+    organization_id: organizationId,
+    employee_id: employeeId,
+    transaction_type: transactionType,
+    source_type: sourceType,
+    source_id: sourceId,
+    points,
+    dollar_value: +(points / 100).toFixed(2),
+    description,
+  });
+  if (error) throw error;
+}
+
+async function ensureBadge(employeeId: string, badgeCode: string) {
+  const { data: badge, error: badgeError } = await admin
+    .from("badges")
+    .select("id")
+    .eq("code", badgeCode)
+    .maybeSingle();
+
+  if (badgeError) throw badgeError;
+  if (!badge) return; // reference badges come from migration 0002 — should already exist
+
+  const { data: existing, error: selectError } = await admin
+    .from("employee_badges")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("badge_id", badge.id)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+  if (existing) return;
+
+  const { error } = await admin.from("employee_badges").insert({ employee_id: employeeId, badge_id: badge.id });
+  if (error) throw error;
+}
+
+/**
+ * Closes the gap between an employee's point_ledger sum and their target
+ * balance with one "pre-pilot history" adjustment row — never by storing a
+ * balance directly. Idempotent via its own existence check since the
+ * partial unique index on point_ledger only covers rows with a non-null
+ * source_id (this one deliberately has none — it's not tied to a single
+ * source event).
+ */
+async function ensurePointsBalance(organizationId: string, employeeId: string, targetBalance: number) {
+  const { data: existingAdjustment, error: adjError } = await admin
+    .from("point_ledger")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("source_type", "pilot_launch_bonus")
+    .is("source_id", null)
+    .maybeSingle();
+
+  if (adjError) throw adjError;
+  if (existingAdjustment) return;
+
+  const { data: rows, error: sumError } = await admin.from("point_ledger").select("points").eq("employee_id", employeeId);
+  if (sumError) throw sumError;
+
+  const currentSum = (rows ?? []).reduce((sum, r) => sum + r.points, 0);
+  const gap = targetBalance - currentSum;
+  if (gap === 0) return;
+
+  const { error } = await admin.from("point_ledger").insert({
+    organization_id: organizationId,
+    employee_id: employeeId,
+    transaction_type: "adjustment",
+    source_type: "pilot_launch_bonus",
+    source_id: null,
+    points: gap,
+    dollar_value: +(gap / 100).toFixed(2),
+    description: "Pre-pilot point balance carried over",
+  });
+  if (error) throw error;
+}
+
+/** Same pattern as ensurePointsBalance, for xp_ledger / lifetime_xp. */
+async function ensureXpBalance(organizationId: string, employeeId: string, targetLifetimeXp: number) {
+  const { data: existingAdjustment, error: adjError } = await admin
+    .from("xp_ledger")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("source_type", "pilot_launch_bonus")
+    .is("source_id", null)
+    .maybeSingle();
+
+  if (adjError) throw adjError;
+  if (existingAdjustment) return;
+
+  const { data: rows, error: sumError } = await admin.from("xp_ledger").select("xp").eq("employee_id", employeeId);
+  if (sumError) throw sumError;
+
+  const currentSum = (rows ?? []).reduce((sum, r) => sum + r.xp, 0);
+  const gap = targetLifetimeXp - currentSum;
+  if (gap === 0) return;
+
+  const { error } = await admin.from("xp_ledger").insert({
+    organization_id: organizationId,
+    employee_id: employeeId,
+    source_type: "pilot_launch_bonus",
+    source_id: null,
+    xp: gap,
+    description: "Pre-pilot XP carried over",
+  });
+  if (error) throw error;
 }
 
 main().catch((error) => {

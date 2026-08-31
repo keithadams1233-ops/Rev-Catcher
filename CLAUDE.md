@@ -19,11 +19,21 @@ ahead to a later phase's functionality without being asked.
    (see `ARCHITECTURE.md` → "Isolation: Row Level Security"). Never write a
    query that trusts an `organization_id` supplied by the client. Never add
    a table without RLS enabled and a policy.
-2. **Points and XP are immutable ledgers, never a mutable balance column.**
-   Balance is always `SUM(points)` / `SUM(xp)`. Every award needs
-   `source_type` + `source_id` and must go through the ledger's partial
-   unique index (idempotency) — see `ARCHITECTURE.md`. Never add a
-   `points_balance` column anywhere.
+2. **Points balance is always `SUM(point_ledger.points)` — never a stored
+   balance column.** `getPointsBalance()` in `src/lib/data/employee.ts`
+   computes it live, every time. Every award needs `source_type` +
+   `source_id` and must go through the ledger's partial unique index
+   (idempotency) — see `ARCHITECTURE.md`. Never add a `points_balance`
+   column anywhere.
+   `employee_levels` (current_level/current_xp/lifetime_xp) and `streaks`
+   (current_streak/longest_streak) are the one deliberate exception: the
+   spec's own schema defines them as maintained snapshot tables, not raw
+   ledgers, for fast reads. `xp_ledger` is still the source of truth —
+   `employee_levels` must only ever be *derived* from it (by the
+   server-side code that awards XP, never hand-edited elsewhere), so it
+   can't silently drift out of sync. Seed data enforces this by
+   construction: every seeded `employee_levels.lifetime_xp` has a matching
+   `xp_ledger` sum (see `ensureXpBalance` in `scripts/seed.ts`).
 3. **Points/XP/levels/streaks/badges/metrics/leaks are server-written only.**
    These tables intentionally have no client insert/update RLS policy.
    Writes happen through service-role server code (`createServiceRoleClient()`
@@ -67,9 +77,12 @@ substantial phases rather than cascading into the next one unprompted.
    (launches real challenges), goals list + active challenge detail, people
    roster, settings. Reads through `src/lib/data/manager.ts` against real
    rows; the leaks/challenge *data itself* is still hand-seeded demo data,
-   not computed (that's Phases 4 & 6). *(current state of this repo)*
-3. Employee UI (home, missions, leaderboard, points wallet, rewards, XP,
-   levels, streaks, badges) — against seed data. Still stubbed.
+   not computed (that's Phases 4 & 6).
+3. **Employee UI** ✅ — home, missions, leaderboard, points wallet, rewards,
+   XP, levels, streaks, badges. Reads through `src/lib/data/employee.ts`
+   against real rows; reward redemption is a real write (validated
+   service-role server action, spending an employee's actual point
+   balance). *(current state of this repo)*
 4. Real metric engine (beverage/dessert/add-on attachment, average ticket,
    premium upgrade) + unit tests.
 5. CSV import (upload → column mapping → validation → normalization →
@@ -101,10 +114,13 @@ substantial phases rather than cascading into the next one unprompted.
   (`npx supabase gen types typescript`).
 - New tables: add the migration, add RLS policies in the same PR/commit,
   add the TS type, update `ARCHITECTURE.md`'s schema section.
-- **Manager screen data access goes through `src/lib/data/manager.ts`**
-  (server-only, `organizationId` always sourced server-side). Add the
-  equivalent `src/lib/data/employee.ts` when Phase 3 needs it — same
-  pattern, own file, don't mix manager and employee reads in one module.
+- **Manager screen data access goes through `src/lib/data/manager.ts`**,
+  **employee screen data access through `src/lib/data/employee.ts`** —
+  same pattern (server-only, `organizationId`/`employeeId` always sourced
+  server-side), separate files; don't mix manager and employee reads in
+  one module. Data that's genuinely role-agnostic (e.g. the reward
+  catalog) gets its own file instead (`src/lib/data/rewards.ts`) rather
+  than living in either.
 - **Don't use PostgREST embedded selects** (`.select("*, locations(name)")`)
   against our hand-written `Database` type — its `Relationships` arrays are
   all `[]`, so postgrest-js can't type-check the embed. Do two plain

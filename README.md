@@ -7,22 +7,29 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phase 1 (Project Foundation)** and **Phase 2 (Manager UI)** are implemented:
-Next.js + Supabase wiring, the full database schema and RLS policies,
-authentication, role-based routing, a dev-only role switcher, and the whole
-Rev Catcher manager experience — home, revenue leaks (list + detail), the
-challenge/goal builder, active challenge tracking, a people roster, and
-settings. The **Rev Rewards employee screens** still show "not yet built"
-placeholders — Phase 3 fills those in.
+**Phases 1–3 are implemented**: Next.js + Supabase wiring, the full database
+schema and RLS policies, authentication, role-based routing, a dev-only role
+switcher, the whole Rev Catcher manager experience (home, revenue leaks,
+goal builder, challenge tracking, people, settings), and the whole Rev
+Rewards employee experience (home, missions, leaderboard, points wallet,
+rewards, XP/levels/streaks/badges).
 
-The manager screens read real rows through Supabase (not mocks), but the
-*leak detection* itself (Phase 6) and the *metric engine* (Phase 4) don't
-exist yet — so the 17 revenue leaks and the "Beverage Boost" challenge you'll
-see after seeding are hand-authored demo data reproducing the spec's example
-numbers, not something the app computed. Launching a *new* challenge from one
-of those leaks, however, is real: the goal builder writes actual
-`challenges`/`challenge_tiers`/`challenge_participants`/`notifications` rows
-through the manager's own RLS-scoped session.
+Every screen reads real rows through Supabase (not mocks), but two engines
+that would *produce* those rows live don't exist yet:
+
+- **Leak detection** (Phase 6) and the **metric engine** (Phase 4) — so the
+  17 revenue leaks and the "Beverage Boost" challenge you'll see after
+  seeding are hand-authored demo data reproducing the spec's example
+  numbers, not something the app computed.
+- **The gamification engine** (Phase 8) — so points/XP/streaks/mission
+  progress are seeded starting values, not the result of a live shift.
+
+Two flows *are* real writes, not mockups, because they only need the
+manager's or employee's own session, not a missing engine: the goal builder
+launches an actual challenge (`challenges`/`challenge_tiers`/
+`challenge_participants`/`notifications` rows), and redeeming a reward
+actually spends the employee's real point balance (checked server-side
+before the write).
 
 ## Stack
 
@@ -90,25 +97,27 @@ npm run seed
 ```
 
 Creates "ABC Restaurant Holdings" with 5 locations, 17 revenue leaks
-(summing to the spec's $47,820 / $28,340 headline numbers), and the active
-"Beverage Boost" challenge at Store #37 with a 7-person leaderboard — safe to
-re-run, every insert is existence-checked. (The full 14-location /
-267-employee / 90-day dataset from spec §20 — and Sarah's own Rev Rewards
-stats like her points balance and level — wait on the metric and
-gamification engines, Phases 4 and 8, that would actually produce them.)
+(summing to the spec's $47,820 / $28,340 headline numbers), the active
+"Beverage Boost" challenge at Store #37 with a 7-person leaderboard, and
+each of those 7 employees' level/XP/streak/points/badges/daily-mission
+progress — safe to re-run, every insert is existence-checked. (The full
+14-location / 267-employee / 90-day dataset from spec §20 waits on the
+metric engine, Phase 4, that would actually produce it.)
 
-Demo accounts (password for all: `RevCatcher123!`):
+Demo accounts (password for all: `RevCatcher123!`) — Sarah's stats
+(8,450 points, level 12, 11-day streak, rank 4) match the spec's own §20
+example exactly:
 
-| Role | Email |
-| --- | --- |
-| Owner (manager experience) | `manager@revcatcher.demo` |
-| Employee — rank 1 | `kevin@revcatcher.demo` |
-| Employee — rank 2 | `ana@revcatcher.demo` |
-| Employee — rank 3 | `diego@revcatcher.demo` |
-| Employee — rank 4 | `sarah@revcatcher.demo` |
-| Employee — rank 5 | `priya@revcatcher.demo` |
-| Employee — rank 6 | `marcus@revcatcher.demo` |
-| Employee — rank 7 | `jamal@revcatcher.demo` |
+| Role | Email | Level | Points | Streak |
+| --- | --- | --- | --- | --- |
+| Owner (manager experience) | `manager@revcatcher.demo` | — | — | — |
+| Employee — rank 1 | `kevin@revcatcher.demo` | 15 | 9,200 | 8d |
+| Employee — rank 2 | `ana@revcatcher.demo` | 13 | 8,900 | 9d |
+| Employee — rank 3 | `diego@revcatcher.demo` | 9 | 7,600 | 4d |
+| Employee — rank 4 | `sarah@revcatcher.demo` | 12 | 8,450 | 11d |
+| Employee — rank 5 | `priya@revcatcher.demo` | 7 | 6,200 | 2d |
+| Employee — rank 6 | `marcus@revcatcher.demo` | 6 | 5,100 | 0d |
+| Employee — rank 7 | `jamal@revcatcher.demo` | 5 | 4,300 | 1d |
 
 ### 6. Run the app
 
@@ -157,20 +166,27 @@ src/
     login/            sign-in page + server actions
     manager/           Rev Catcher screens (role-gated) — home, leaks, leaks/[id],
                          goals (list + [id] + new builder), people, settings
-    employee/          Rev Rewards shell, nav, and pages (role-gated) — still stubs
+    employee/          Rev Rewards screens (role-gated) — home, missions, ranks,
+                         points, rewards (+ the reward-redemption server action)
     page.tsx            role-based landing redirect
     dev-role-switch-actions.ts   dev-only view override
   components/
     manager/            manager nav + screen building blocks (stat cards, leak
                          cards, the goal builder, progress bars, status badges)
-    rewards/             employee bottom nav
+    rewards/             employee nav + screen building blocks (gradient progress
+                         bars, level/points/streak tiles, challenge/mission cards,
+                         badge pills, redeem button)
     dev-role-switcher.tsx
     phase-stub.tsx        "not yet built" placeholder used by future-phase screens
   lib/
     supabase/            browser/server/service-role Supabase clients + middleware
     auth/                 current-profile helper
-    data/manager.ts       server-only read layer for every manager screen
+    data/
+      manager.ts           server-only read layer for every manager screen
+      employee.ts           server-only read layer for every employee screen
+      rewards.ts             reward catalog reads (role-agnostic — used by both)
     challenges/            deterministic goal-builder recommendation math
+    gamification/          level/XP formula + streak milestone math (spec §15)
     format.ts              currency/percent/confidence formatting, shared everywhere
     dev/                   dev-view cookie helper
     types/database.ts     hand-written Supabase Database type
@@ -178,9 +194,10 @@ supabase/
   migrations/            SQL migrations, applied in filename order
 scripts/
   seed.ts                 demo data: org, locations, revenue leaks, the
-                           "Beverage Boost" challenge and its leaderboard
+                           "Beverage Boost" challenge, and every seeded
+                           employee's level/XP/streak/points/badges/missions
 ```
 
 See `ARCHITECTURE.md` for the tenant model, schema relationships, and the
-engines (metric, challenge, points/XP) that later phases build on this
+engines (metric, challenge, gamification) that later phases build on this
 foundation.

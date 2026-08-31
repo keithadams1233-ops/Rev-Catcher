@@ -1,9 +1,9 @@
 # Architecture
 
-Status: reflects Phase 1 (Project Foundation) and Phase 2 (Manager UI).
-Sections describing engines that don't exist yet are marked "planned" — they
-document the design those phases will implement against, not what's running
-today.
+Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI), and
+Phase 3 (Employee UI). Sections describing engines that don't exist yet are
+marked "planned" — they document the design those phases will implement
+against, not what's running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -145,15 +145,16 @@ once one exists:
 npx supabase gen types typescript --project-id <id> > src/lib/types/database.ts
 ```
 
-## The points ledger is immutable (planned, Phase 8)
+## The points ledger is immutable
 
 `point_ledger` and `xp_ledger` are append-only. An employee's point balance
-is **always** `SUM(points)` over their ledger rows — there is intentionally
-no mutable `balance` column anywhere to drift out of sync. Every row is a
-receipt: `transaction_type` (`earn` / `redeem` / `adjustment` / `reversal`),
-`source_type` + `source_id` (what earned it — a mission, a challenge tier, a
-manual adjustment), and `dollar_value` at the org's `default_point_value`
-rate (100 points = $1 by default).
+is **always** `SUM(points)` over their ledger rows — `getPointsBalance()`
+(`src/lib/data/employee.ts`) computes it live on every read; there is
+intentionally no mutable `balance` column anywhere to drift out of sync.
+Every row is a receipt: `transaction_type` (`earn` / `redeem` /
+`adjustment` / `reversal`), `source_type` + `source_id` (what earned it — a
+mission, a challenge tier, a manual adjustment), and `dollar_value` at the
+org's `default_point_value` rate (100 points = $1 by default).
 
 Idempotency is enforced in the schema, not just in application logic: a
 partial unique index —
@@ -169,6 +170,39 @@ same `(employee, source_type, source_id)` twice. The same pattern exists on
 `xp_ledger`. This is what makes "points are automatically added exactly
 once" (spec success criteria) an invariant the database enforces rather than
 something the application has to get right on every code path.
+
+**`employee_levels` and `streaks` are maintained snapshots, not raw
+ledgers.** The spec's own schema (§5) defines them as separate small tables
+(`current_level`/`current_xp`/`lifetime_xp`; `current_streak`/
+`longest_streak`) rather than making the UI re-sum `xp_ledger` on every
+page load — a standard event-log-plus-projection pattern. The invariant
+that keeps this honest: `employee_levels.lifetime_xp` must always equal
+`SUM(xp_ledger.xp)` for that employee, maintained by whatever server code
+writes XP (right now, `scripts/seed.ts`'s `ensureXpBalance`; Phase 8's
+mission/challenge-completion triggers later) — never edited independently.
+Levels themselves use a deterministic formula
+(`src/lib/gamification/levels.ts`, spec §15: `xpForLevel(level) = 500 +
+level × 100`), shared by the seed script and the employee UI so they can't
+compute "XP to next level" differently.
+
+**Reward redemption is a real, validated write** (`src/app/employee/rewards/actions.ts`),
+resolving the gap flagged in Phase 1/2's trade-offs: `reward_redemptions`
+and `point_ledger` still have no client insert RLS policy (spending points
+needs a balance check *before* the insert, which RLS alone can't express),
+so `redeemReward()` authenticates the caller with their own session first,
+then uses the service-role client to read their real ledger sum, verify
+they can afford it, and insert both the redemption and the offsetting
+`point_ledger` debit — doing its own authorization exactly as CLAUDE.md
+rule #3 requires of service-role code. The debit's `source_id` is the
+redemption row itself, so the same partial unique index that protects
+`earn` rows also makes a double-charge impossible if the action ever ran
+twice for one redemption.
+
+**What's still Phase 8, not Phase 3:** nothing in the app yet writes
+`point_ledger`/`xp_ledger`/mission-progress rows from a *live* event
+(completing a mission, crossing a challenge tier, a streak advancing a
+day) — those all come from hand-seeded demo data today. Phase 8 is what
+wires real POS-driven progress into these tables automatically.
 
 ## Metric engine (planned, Phase 4)
 
@@ -265,11 +299,6 @@ row.
   Tailwind pipeline uses, which is current) — fixed only in Next 16.
   Revisit once 16 has had time to stabilize and its docs are reliably
   covered.
-- **Reward redemption has no client insert policy yet.** Spending points
-  needs a balance check before the insert (never let a client insert a
-  redemption for more points than the ledger sums to); that's a
-  server-side RPC, built alongside the Rewards screen in Phase 8, not a
-  raw `insert` RLS policy.
 - **`@supabase/ssr` must stay reasonably current.** Pinning it to an older
   release (`^0.5.x`) against a freshly-installed, much newer
   `@supabase/supabase-js` broke typed queries outright — every
