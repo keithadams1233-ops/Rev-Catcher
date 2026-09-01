@@ -136,6 +136,14 @@ Migrations live in `supabase/migrations/`, in order:
    table.
 5. `0005_pos_column_mappings.sql` — reusable per-org CSV column mappings
    (Phase 5).
+6. `0006_harden_profile_authorization.sql` — closes two privilege-escalation
+   holes found in a production-readiness audit: the signup trigger no
+   longer trusts `role`/`organization_id` from a new user's own metadata,
+   and `profiles` UPDATE is now column-restricted so only trusted
+   service-role code can change role/org. **Also turn off "Allow new
+   users to sign up"** in the Supabase dashboard's Authentication
+   settings before a pilot — this app is invite-only by design and has
+   no public sign-up flow.
 
 Apply them with the [Supabase CLI](https://supabase.com/docs/guides/cli):
 

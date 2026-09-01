@@ -53,10 +53,16 @@ organizations
 - `profiles` extends `auth.users` 1:1 (`profiles.id = auth.users.id`) and
   adds `organization_id` + `role`. A new `auth.users` row automatically gets
   a `profiles` row via the `handle_new_user()` trigger
-  (`supabase/migrations/0003_helper_functions.sql`), reading
-  `organization_id` / `role` / `first_name` / `last_name` out of
-  `raw_user_meta_data` (set by the server-side invite/seed flow via
-  `admin.createUser({ user_metadata })`).
+  (`supabase/migrations/0003_helper_functions.sql`, hardened by
+  `0006_harden_profile_authorization.sql` — see "Known trade-offs" for
+  why): every new profile starts as an unassigned `employee`
+  (`organization_id` null) regardless of what a signup call's own
+  metadata claims; `first_name`/`last_name` still come from
+  `raw_user_meta_data` (cosmetic only). Assigning a real
+  `organization_id`/`role` happens through an explicit service-role
+  `UPDATE` right after `admin.createUser()` (`scripts/seed.ts`'s
+  `ensureAuthUser`), never through trigger logic that trusts signup
+  metadata.
 - `employee_locations` lets one employee work multiple locations
   (`primary_location` marks the default for aggregate reporting).
 - Roles: `owner`, `admin`, `manager` see the Rev Catcher (manager) experience;
@@ -866,3 +872,55 @@ source is being built, not before.
   `Relationships` arrays don't give postgrest-js enough to type-check an
   embed), worked around by not using embeds rather than by further
   fighting the types.
+- **Two privilege-escalation holes fixed by a production-readiness audit
+  (`0006_harden_profile_authorization.sql`), not caught by any earlier
+  phase because both bypass this app's own UI/Server Actions entirely and
+  hit Supabase's public APIs directly:** (1) `handle_new_user()` used to
+  trust `role`/`organization_id` straight out of a new user's own signup
+  metadata — indistinguishable, from the trigger's point of view, from
+  the trusted service-role invite path, so anyone with the (necessarily
+  public) anon key could call `supabase.auth.signUp()` directly and
+  self-grant `owner` in any organization. (2) `profiles`' two UPDATE RLS
+  policies restricted which *row* could be updated but not which
+  *columns*, so any signed-in employee's own already-issued session could
+  `update({ role: 'owner' })` on their own row. Fixed with a
+  `security definer` trigger that always lands a new profile unprivileged
+  and unassigned, plus revoking/re-granting column-level UPDATE on
+  `profiles` so only cosmetic fields (name/phone/avatar/active) are
+  writable by the `authenticated` role at all — `role`/`organization_id`
+  changes now only happen through trusted service-role code. Pilots
+  deploying this app should still turn off "Allow new users to sign up"
+  in the Supabase dashboard's Authentication settings, since there's no
+  legitimate public sign-up flow to support; the migration is defense in
+  depth, not a substitute for that setting.
+- **No CSP or other custom security headers configured** — relying on
+  Vercel/Next's own defaults. Worth adding once there's a second
+  deployment target or an actual incident to react to; not blocking for
+  a single-tenant-per-deploy pilot.
+- **`redeemReward`'s balance check and its ledger insert aren't one
+  atomic transaction** (same category as the goal builder's sequential
+  inserts, above) — two concurrent redemption requests from the same
+  employee could theoretically both pass the balance check before either
+  commits. A real Postgres RPC would close this; flagged, not fixed, in
+  the Phase 10 pilot-hardening audit as low-odds for a single pilot
+  employee to trigger against their own account.
+- **A manager's own org-scoped RLS UPDATE policies (`revenue_leaks`,
+  `challenges`, `challenge_tiers`, `team_goals`, `challenge_participants`,
+  `daily_missions`, `reward_redemptions`) restrict the row but not the
+  column/value**, same shape as the `profiles` issue above — but scoped
+  entirely to a manager's *own* organization's data, which they already
+  have legitimate business authority over in this app's model (nothing
+  crosses a tenant boundary or grants unearned privilege). The practical
+  risk is a manager manually overriding a computed number (e.g. a
+  `challenge_participants.points_earned` value) via a direct API call
+  instead of through the deterministic engines — a same-tenant
+  data-integrity concern, not unauthorized access. Not hardened in this
+  pass; worth column-scoping the same way if a pilot surfaces it as a
+  real problem.
+- **No `loading.tsx`/`error.tsx` existed before the production-readiness
+  audit** — every screen does a real Supabase fetch with nothing shown
+  while it's in flight, and an unhandled Server Component error fell
+  through to Next's raw default error page. Fixed with a `loading.tsx`
+  and `error.tsx` per experience (`src/app/manager/`, `src/app/employee/`)
+  in each surface's own visual language, plus a root `not-found.tsx` for
+  an unmatched route.

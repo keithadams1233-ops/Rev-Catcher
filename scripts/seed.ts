@@ -353,14 +353,24 @@ async function ensureAuthUser(
     password: DEMO_PASSWORD,
     email_confirm: true,
     user_metadata: {
-      organization_id: organizationId,
-      role: user.role,
       first_name: user.first_name,
       last_name: user.last_name,
     },
   });
 
   if (error) throw error;
+
+  // organization_id/role are no longer trusted from auth metadata (see
+  // 0006_harden_signup_trigger.sql) -- the bootstrap trigger always lands
+  // a brand-new profile as an unassigned employee, so the invite flow
+  // assigns the real org/role itself, right here, through the same
+  // service-role client that already bypasses RLS for this whole script.
+  const { error: assignError } = await admin
+    .from("profiles")
+    .update({ organization_id: organizationId, role: user.role })
+    .eq("id", data.user.id);
+  if (assignError) throw assignError;
+
   console.log(`  created ${user.role} account ${user.email} (${data.user.id})`);
   return data.user.id;
 }
