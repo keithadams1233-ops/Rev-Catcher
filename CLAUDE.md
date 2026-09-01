@@ -114,9 +114,25 @@ substantial phases rather than cascading into the next one unprompted.
    the leak's location-level value only when an employee has none yet.
    Run automatically after CSV import (closing out every step of spec
    §19) and manually via "Update Progress" on a challenge's detail page.
+8. **Gamification engine** ✅ — `src/lib/gamification/`: daily mission
+   progress (reuses the Phase 4 attachment engine, scoped to one
+   employee's transactions for `active_date`), XP/points awarded on
+   first completion (idempotent, same source_type+source_id pattern as
+   everywhere else), `employee_levels` recomputed via
+   `deriveLevelFromLifetimeXp` (never hand-incremented), participation
+   streaks advanced for today, and badges evaluated org-wide, data-driven
+   against `badges.criteria_type`/`criteria_value`. Notifications
+   (`mission_completed`, `level_up`, `reward_unlocked` for badges) go
+   through a shared `notify.ts` helper that Phase 7's challenge progress
+   job was retrofitted to use too (`points_earned`, `team_goal_progress`,
+   `challenge_completed`). Run automatically after CSV import, as the
+   last step of the pipeline. Documented scope cuts (not silently
+   skipped — see ARCHITECTURE.md's "Gamification engine" section):
+   rank-based missions and `leaderboard_change` notifications (no
+   leaderboard-history infra), streak milestone bonus points (no safe
+   idempotency key for a repeating same-employee event), and daily
+   mission *generation* (missions stay manager/seed-created).
    *(current state of this repo)*
-8. Gamification engine (points, XP, levels, streaks, daily missions,
-   badges, notifications).
 9. ROI report (before/after challenge measurement).
 10. Pilot hardening (empty states, corrupted CSV, duplicate uploads,
     refunds/voids, missing employee IDs, location changes, small samples,

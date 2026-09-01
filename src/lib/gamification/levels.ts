@@ -26,6 +26,29 @@ export function cumulativeXpForLevel(level: number): number {
   return total;
 }
 
+/**
+ * The inverse of `cumulativeXpForLevel`: given a lifetime XP total (the
+ * `xp_ledger` sum for an employee), finds the level/current-XP pair it
+ * corresponds to. This is what keeps `employee_levels` a true derivation
+ * of `xp_ledger` rather than an independently-maintained number (CLAUDE.md
+ * rule #2) — whenever new XP is awarded, the gamification job recomputes
+ * `employee_levels` from the ledger's new total via this function, never
+ * by incrementing `current_xp` in place.
+ */
+export function deriveLevelFromLifetimeXp(lifetimeXp: number): { level: number; currentXp: number } {
+  let level = 1;
+  let consumed = 0;
+
+  while (level < MAX_LEVEL) {
+    const needed = xpForLevel(level);
+    if (consumed + needed > lifetimeXp) break;
+    consumed += needed;
+    level += 1;
+  }
+
+  return { level, currentXp: lifetimeXp - consumed };
+}
+
 export interface LevelProgress {
   level: number;
   currentXp: number;

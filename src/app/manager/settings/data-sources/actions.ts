@@ -6,6 +6,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { recalculateMetricSnapshots } from "@/lib/metrics/recalculate";
 import { detectRevenueLeaks } from "@/lib/revenue-leaks/detect";
 import { updateChallengeProgress } from "@/lib/challenges/update-progress";
+import { updateGamification } from "@/lib/gamification/update-gamification";
 import {
   applyMapping,
   validateRows,
@@ -43,6 +44,10 @@ export interface ImportCsvResult {
   challengeParticipantsUpdated: number;
   challengeTiersAwarded: number;
   challengesCompleted: number;
+  missionsCompleted: number;
+  levelsGained: number;
+  streaksAdvanced: number;
+  badgesAwarded: number;
 }
 
 /**
@@ -53,7 +58,9 @@ export interface ImportCsvResult {
  * already imported, writes through the service-role client (transactions/
  * transaction_items have no client insert RLS policy by design — see
  * ARCHITECTURE.md), and finishes by re-running the metric engine over the
- * organization's full transaction history.
+ * organization's full transaction history, then leak detection, challenge
+ * progress, and (Phase 8) today's mission progress/XP/levels/streaks/
+ * badges — spec §19's full pipeline, one step feeding the next.
  */
 export async function importCsv(input: ImportCsvInput): Promise<{ result: ImportCsvResult } | { error: string }> {
   const profile = await getCurrentProfile();
@@ -169,6 +176,10 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     let challengeParticipantsUpdated = 0;
     let challengeTiersAwarded = 0;
     let challengesCompleted = 0;
+    let missionsCompleted = 0;
+    let levelsGained = 0;
+    let streaksAdvanced = 0;
+    let badgesAwarded = 0;
 
     if (transactionsToInsert.length > 0) {
       const { data: insertedTx, error: insertTxError } = await supabase
@@ -221,6 +232,16 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
       challengeParticipantsUpdated = progressResult.participantsUpdated;
       challengeTiersAwarded = progressResult.tiersAwarded;
       challengesCompleted = progressResult.challengesCompleted;
+
+      // Phase 8: ...and rolls today's mission progress, XP/levels, streaks,
+      // and badges into the same import — the last step of the pipeline,
+      // since badge criteria (level_reached, challenge_rank_max) depend on
+      // everything computed above it.
+      const gamificationResult = await updateGamification(organizationId);
+      missionsCompleted = gamificationResult.missionsCompleted;
+      levelsGained = gamificationResult.levelsGained;
+      streaksAdvanced = gamificationResult.streaksAdvanced;
+      badgesAwarded = gamificationResult.badgesAwarded;
     }
 
     const timestamps = [...resolved.values()].map((r) => r.group.timestamp);
@@ -245,6 +266,8 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     revalidatePath("/manager");
     revalidatePath("/manager/leaks");
     revalidatePath("/manager/goals");
+    revalidatePath("/employee");
+    revalidatePath("/employee/missions");
 
     return {
       result: {
@@ -262,6 +285,10 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
         leaksCreated,
         leaksUpdated,
         leaksResolved,
+        missionsCompleted,
+        levelsGained,
+        streaksAdvanced,
+        badgesAwarded,
       },
     };
   } catch (err) {

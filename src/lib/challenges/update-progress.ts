@@ -1,9 +1,8 @@
 import "server-only";
 
 import { createServiceRoleClient } from "@/lib/supabase/server";
+import { sendNotification, sendNotifications, type ServiceClient } from "@/lib/gamification/notify";
 import { computeParticipantUpdate, computeRankings, computeTeamGoalUpdate, isChallengeExpired } from "./progress";
-
-type ServiceClient = ReturnType<typeof createServiceRoleClient>;
 
 export interface ProgressUpdateSummary {
   challengesChecked: number;
@@ -26,9 +25,12 @@ export interface ProgressUpdateSummary {
  * Points for crossing a challenge tier or completing a team goal are
  * awarded here, not deferred to Phase 8 — a challenge's tiers *are*
  * point rewards (`challenge_tiers.points_awarded`), so "progress
- * updates" for a challenge inherently means awarding them. Phase 8 owns
- * XP, streaks, missions, badges, and notifications — none of which a
- * challenge tier crossing touches.
+ * updates" for a challenge inherently means awarding them. Phase 8 adds
+ * the matching notifications (`points_earned`, `team_goal_progress`,
+ * `challenge_completed`) through the shared `notify.ts` helper, on the
+ * same three crossing events this module already detects — XP, streaks,
+ * missions, and badges are still entirely Phase 8's own
+ * (`src/lib/gamification/update-gamification.ts`), not this one.
  */
 export async function updateChallengeProgress(organizationId: string): Promise<ProgressUpdateSummary> {
   const supabase = createServiceRoleClient();
@@ -108,7 +110,17 @@ export async function updateChallengeProgress(organizationId: string): Promise<P
           points: tier.pointsAwarded,
           description: `${challenge.title} — tier reached`,
         });
-        if (awarded) summary.tiersAwarded += 1;
+        if (awarded) {
+          summary.tiersAwarded += 1;
+          await sendNotification(supabase, {
+            organizationId,
+            userId: participant.employee_id,
+            type: "points_earned",
+            title: `+${tier.pointsAwarded} points — ${challenge.title}`,
+            body: "You reached a new tier. Keep it up!",
+            link: "/employee/points",
+          });
+        }
       }
 
       const { error: updateError } = await supabase
@@ -179,6 +191,17 @@ export async function updateChallengeProgress(organizationId: string): Promise<P
               description: `${challenge.title} — team goal reached`,
             });
           }
+          await sendNotifications(
+            supabase,
+            (participants ?? []).map((participant) => ({
+              organizationId,
+              userId: participant.employee_id,
+              type: "team_goal_progress" as const,
+              title: `Team goal reached — ${challenge.title}`,
+              body: `Everyone earned +${teamGoal.points_awarded_per_employee} points.`,
+              link: "/employee",
+            })),
+          );
         }
       }
     }
@@ -190,6 +213,21 @@ export async function updateChallengeProgress(organizationId: string): Promise<P
         .eq("id", challenge.id);
       if (completeError) throw completeError;
       summary.challengesCompleted += 1;
+
+      await sendNotifications(
+        supabase,
+        (participants ?? []).map((participant) => {
+          const finalRank = rankings.get(participant.employee_id);
+          return {
+            organizationId,
+            userId: participant.employee_id,
+            type: "challenge_completed" as const,
+            title: `${challenge.title} is complete`,
+            body: finalRank ? `You finished ranked #${finalRank}.` : "See how you did.",
+            link: `/employee`,
+          };
+        }),
+      );
     }
   }
 

@@ -296,6 +296,15 @@ export function ImportWizard({ savedMapping }: { savedMapping: ColumnMapping | n
               </Link>
             </p>
           )}
+          {(result.missionsCompleted > 0 ||
+            result.levelsGained > 0 ||
+            result.streaksAdvanced > 0 ||
+            result.badgesAwarded > 0) && (
+            <p className="mt-1 text-xs text-manager-muted">
+              Rev Rewards: {result.missionsCompleted} missions completed today, {result.levelsGained} employees
+              leveled up, {result.streaksAdvanced} streaks advanced, {result.badgesAwarded} badges awarded.
+            </p>
+          )}
         </div>
 
         {result.errors.length > 0 && (

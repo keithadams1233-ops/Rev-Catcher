@@ -2,10 +2,10 @@
 
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
 Phase 3 (Employee UI), Phase 4 (Real Metric Engine), Phase 5 (CSV
-Import), Phase 6 (Revenue Leak Engine), and Phase 7 (Challenge Engine).
-Sections describing engines that don't exist yet are marked "planned" —
-they document the design those phases will implement against, not what's
-running today.
+Import), Phase 6 (Revenue Leak Engine), Phase 7 (Challenge Engine), and
+Phase 8 (Gamification Engine). Sections describing engines that don't
+exist yet are marked "planned" — they document the design those phases
+will implement against, not what's running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -203,11 +203,11 @@ redemption row itself, so the same partial unique index that protects
 `earn` rows also makes a double-charge impossible if the action ever ran
 twice for one redemption.
 
-**What's still Phase 8, not Phase 3:** nothing in the app yet writes
-`point_ledger`/`xp_ledger`/mission-progress rows from a *live* event
-(completing a mission, crossing a challenge tier, a streak advancing a
-day) — those all come from hand-seeded demo data today. Phase 8 is what
-wires real POS-driven progress into these tables automatically.
+**Real as of Phase 8**: today's mission completions, level-ups, and
+streak advancement all now come from a live event — real transactions
+processed by `src/lib/gamification/update-gamification.ts` — not just
+hand-seeded demo data. See "Gamification engine" below for the mechanism
+and its documented scope cuts (what still isn't auto-tracked, and why).
 
 ## Metric engine
 
@@ -487,15 +487,20 @@ existed to produce that snapshot.
   location-level snapshot the same way and, on crossing, awards its flat
   bonus to every participant. A challenge whose `end_date` has passed
   flips to `completed`.
-- **Points, not XP, and no notifications yet — a deliberate scope
-  boundary.** Phase 8 owns XP/streaks/missions/badges/notifications, but
-  a challenge tier *is* a points reward
-  (`challenge_tiers.points_awarded`) — "progress updates" for a
-  challenge is meaningless without awarding it, so that award happens
-  here, using ledger infrastructure that's existed since Phase 1. Nothing
-  else gamification-shaped (XP, streak advancement, badge criteria,
-  `points_earned`/`team_goal_progress`/`challenge_completed`
-  notifications) is touched by this module.
+- **Points, not XP — a deliberate scope boundary.** A challenge tier *is*
+  a points reward (`challenge_tiers.points_awarded`) — "progress
+  updates" for a challenge is meaningless without awarding it, so that
+  award happens here, using ledger infrastructure that's existed since
+  Phase 1. XP, streak advancement, and badge criteria stay entirely
+  Phase 8's own (`src/lib/gamification/update-gamification.ts`) — this
+  module never touches `xp_ledger`, `streaks`, or `employee_badges`.
+  Phase 8 did add the matching notifications here, though: a tier award
+  now fires `points_earned`, a team goal completion fires
+  `team_goal_progress` to every participant, and a challenge flipping to
+  `completed` fires `challenge_completed` to every participant with
+  their final rank — all through the shared `sendNotification`/
+  `sendNotifications` helper in `src/lib/gamification/notify.ts`, the
+  same one Phase 8's own job uses.
 
 **Wired to two triggers**, same pattern as leak detection: automatically
 at the end of a successful CSV import, right after leak detection (spec
@@ -510,6 +515,118 @@ employee-level `metric_snapshots` for those specific employees at Store
 #37; this module was deliberately not backported into the seed script to
 keep it demonstrating the real mechanism (live data → real update) rather
 than a seed script pre-computing what the engine would have produced.
+
+## Gamification engine
+
+Spec §11/§12/§15, `src/lib/gamification/` — deterministic mission
+progress, XP/level derivation, and badge criteria (same discipline as
+every other engine: pure functions with a Vitest suite, one impure job
+that writes), plus a shared notification helper Phase 7's challenge
+engine now uses too.
+
+- **`levels.ts`** — the leveling formula (`xpForLevel(level) = 500 +
+  level × 100`, already used since Phase 3 for seed data and the
+  employee UI's progress bar) plus `deriveLevelFromLifetimeXp`, its
+  inverse: given a lifetime `xp_ledger` sum, returns the `{ level,
+  currentXp }` pair it corresponds to. This is the one function that
+  keeps `employee_levels` a true *derivation* of `xp_ledger` (CLAUDE.md
+  rule #2) rather than an independently maintained counter — every XP
+  award recomputes the whole row from the ledger's new sum through this
+  function, never by incrementing `current_xp` in place.
+- **`mission-progress.ts`** — reuses the Phase 4 attachment engine
+  (`calculateAttachmentRate`/`DEFAULT_ATTACHMENT_RULES`) rather than
+  re-deriving eligibility rules a second time: a mission against
+  `beverage_attachment` is measuring the exact same thing a revenue-leak
+  detector is, just scoped to one employee's transactions for
+  `active_date`. `daily_missions` has no explicit "count vs. rate" flag,
+  so `target_value > 1` is treated as a count target (e.g. "attach 5
+  times") and `<= 1` as a rate target (e.g. "50% attachment") —
+  unambiguous for every mission the spec or seed data actually uses. A
+  rate mission additionally never completes below
+  `MIN_SAMPLE_FOR_RATE_MISSION` (10) eligible transactions, the same
+  anti-gaming floor every other engine in this app applies to a thin
+  sample.
+- **`badges.ts`** — data-driven against the seeded `badges` table's
+  `criteria_type`/`criteria_value` columns rather than a hardcoded switch
+  per badge code: `evaluateNewBadges` takes every badge definition plus
+  one `BadgeEvaluationState` snapshot (current level, current streak,
+  lifetime completed-mission count, team-goals-completed count, best
+  challenge rank) and returns the codes newly qualified for. A manager
+  adding a badge row with an existing `criteria_type` needs no code
+  change to start being evaluated; an unrecognized `criteria_type` is
+  never auto-awarded rather than guessed at.
+- **`notify.ts`** (server-only) — a thin, shared `notifications` insert
+  wrapper (`sendNotification`/`sendNotifications`) so every write (Phase
+  7's challenge-tier/team-goal points, Phase 8's mission/level/badge
+  events) shapes the same payload the same way instead of each engine
+  reimplementing it. `NotificationType` is the DB's own enum (`new_challenge`,
+  `points_earned`, `level_up`, `mission_completed`, `leaderboard_change`,
+  `team_goal_progress`, `challenge_completed`, `reward_unlocked`) — the
+  enum has no dedicated "badge earned" value, so a badge unlock uses
+  `reward_unlocked` as the closest fit (a badge *is* an unlockable,
+  distinct from a `reward_catalog` redemption) rather than adding a new
+  enum value for one notification's wording.
+- **`update-gamification.ts`** (server-only) — the job, run per
+  organization: today's `daily_missions` progress (mission-location
+  transactions grouped by employee, fed through `mission-progress.ts`) →
+  XP or points awarded on first completion, gated by
+  `employee_mission_progress.reward_issued` and the same
+  existence-check-before-insert idempotency pattern as Phase 7's
+  point-ledger helper (mirrored here for `xp_ledger` too, which has no
+  `dollar_value`/`transaction_type` columns to share a helper with
+  `point_ledger`) → `employee_levels` recomputed via
+  `deriveLevelFromLifetimeXp` for every employee who just earned XP →
+  participation streaks advanced for every employee with at least one
+  clean transaction *today* (a gap since `last_qualified_date` resets to
+  1, consecutive-from-yesterday increments, already-processed-today is a
+  no-op) → badges evaluated org-wide against every employee's current
+  level/streak/lifetime mission/team-goal/rank state → a notification for
+  each mission completion, level-up, and badge unlock.
+
+**Documented scope, same discipline as every other engine in this app:**
+
+- Only missions whose `metric_code` is one of the four attachment
+  metrics are auto-tracked. A rank-based mission (`metric_code: null`,
+  e.g. the seeded "Climb One Spot") has no leaderboard-history
+  infrastructure to diff against, and `average_ticket`/
+  `loyalty_enrollment` missions have no defined target semantics in the
+  spec's own mission examples — both are left for manual completion,
+  same as Phase 7 left rank-based challenge tiers.
+- Streak and mission processing looks at *today's* transactions only,
+  not a historical backfill across every date a CSV import might
+  contain — consistent with "daily" mission semantics (`active_date`)
+  and with Phase 7's participant updates only ever reading the *latest*
+  snapshot, never replaying history.
+- Streak milestone bonus points (`nextStreakMilestone` in `levels.ts` —
+  +250 every 5th consecutive day, shown as UI flavor text) are **not**
+  auto-awarded here. Unlike a mission or a challenge tier, a streak
+  milestone has no natural per-occurrence row to key `point_ledger`'s
+  idempotency off — `streaks` is one mutable row per employee, not a
+  ledger of individual streak-days. Faking a `source_id` for it (e.g.
+  hashing employee+day) would be an idempotency guarantee only in
+  appearance, not in fact, so it's left out rather than built unsafely.
+- `leaderboard_change` notifications are skipped for the same reason as
+  rank-based missions: no persisted rank history to diff "changed"
+  against without building exactly the infrastructure that cut already
+  decided not to build.
+- Badge criteria are evaluated for every employee in the org on every
+  run, not just employees this run's missions/streaks touched — a
+  `challenge_rank_max` badge can newly qualify purely from a challenge
+  completing (Phase 7's job), with no mission or streak activity that
+  day at all. Org sizes here are pilot/demo scale (dozens of employees,
+  not thousands), so the extra reads are cheap.
+- No manual "Run Gamification Update" button, unlike Phase 6/7's "Detect
+  Leaks"/"Update Progress" — this job isn't naturally tied to one
+  screen the way leak detection (Leaks) or challenge progress (a
+  challenge's detail page) are; it runs automatically after every CSV
+  import instead (see "Wired to" below), and a future phase can add a
+  manual trigger if a pilot actually needs one.
+
+**Wired to one trigger**: automatically at the end of a successful CSV
+import, as the last step of the pipeline (`src/app/manager/settings/data-sources/actions.ts`)
+— after metric recalculation, leak detection, and challenge progress,
+since badge criteria (`level_reached`, `challenge_rank_max`) depend on
+everything computed before it in the same run.
 
 ## Future POS adapter design (planned)
 
