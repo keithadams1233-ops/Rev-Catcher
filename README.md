@@ -7,7 +7,7 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phases 1–6 are implemented**: Next.js + Supabase wiring, the full database
+**Phases 1–7 are implemented**: Next.js + Supabase wiring, the full database
 schema and RLS policies, authentication, role-based routing, a dev-only role
 switcher, the whole Rev Catcher manager experience (home, revenue leaks,
 goal builder, challenge tracking, people, settings), the whole Rev Rewards
@@ -16,34 +16,42 @@ XP/levels/streaks/badges), the real metric engine (`src/lib/metrics/` —
 beverage/dessert/add-on/premium-upgrade attachment + average ticket, unit
 tested), CSV import (Settings → Data Sources: upload → column mapping →
 validation → transactions in the database → the metric engine re-run over
-them), and the revenue leak engine (`src/lib/revenue-leaks/` — benchmark
-calc, gap, revenue/profit opportunity, confidence classification, all unit
-tested against the spec's own worked example).
+them), the revenue leak engine (`src/lib/revenue-leaks/` — benchmark calc,
+gap, revenue/profit opportunity, confidence classification, unit tested
+against the spec's own worked example), and the challenge engine's
+automated half (`src/lib/challenges/update-progress.ts` — real progress
+updates, tier point awards, team goal completion, rankings, and challenge
+completion, all driven by the metric engine's own output).
 
-Every screen reads real rows through Supabase (not mocks). The 17 revenue
-leaks and the "Beverage Boost" challenge you'll see after seeding are still
-hand-authored demo data reproducing the spec's example numbers — but
-uploading real POS data now runs the *entire* pipeline for real: CSV import
-→ transactions → metric snapshots → benchmark comparison → new/updated
-`revenue_leaks` rows, with the same seeded leaks getting overwritten with
-real numbers if a manager uploads data covering their location/metric (a
-leak already turned into a challenge is left alone either way — see
-ARCHITECTURE.md).
+Every screen reads real rows through Supabase (not mocks). Uploading real
+POS data now runs the *entire* pipeline for real: CSV import → transactions
+→ metric snapshots → benchmark comparison → new/updated `revenue_leaks` →
+updated challenge standings, tier points awarded, team goals completed,
+challenges closed out. The 17 hand-seeded revenue leaks and the seeded
+"Beverage Boost" challenge's participant values still start as demo data
+reproducing the spec's example numbers, but both now get overwritten with
+real computed values the moment real data exists for their location/metric
+or employee (a leak already turned into a challenge, or a challenge tier
+already awarded, is left alone either way — see ARCHITECTURE.md).
 
 One engine is still not real:
 
-- **The gamification engine** (Phase 8) — points/XP/streaks/mission
-  progress are still seeded starting values; nothing yet turns "an
-  employee completed a mission" or "a challenge tier was crossed" from
-  live data into a ledger write.
+- **The gamification engine** (Phase 8) — XP/streaks/mission progress are
+  still seeded starting values; nothing yet turns a completed mission or a
+  streak day into a ledger write. (Challenge-tier *points* are real as of
+  Phase 7 — a challenge's tiers are a points reward by definition, so
+  awarding them is the challenge engine's job, not Phase 8's.)
 
-Four flows *are* real writes, not mockups: the goal builder launches an
+Five flows *are* real writes, not mockups: the goal builder launches an
 actual challenge (`challenges`/`challenge_tiers`/`challenge_participants`/
-`notifications` rows), redeeming a reward actually spends the employee's
-real point balance (checked server-side before the write), CSV import
-actually inserts `transactions`/`transaction_items` and re-runs the metric
-engine over them, and revenue leak detection actually reads the result
-and writes `revenue_leaks`.
+`notifications` rows) with each participant's baseline pulled from their
+own real data when it exists; redeeming a reward actually spends the
+employee's real point balance (checked server-side before the write); CSV
+import actually inserts `transactions`/`transaction_items` and re-runs the
+metric engine over them; revenue leak detection actually reads the result
+and writes `revenue_leaks`; and challenge progress updates actually read
+the result and update standings, award tier points, and complete
+challenges/team goals.
 
 ## Stack
 
@@ -160,14 +168,21 @@ correctness demo, not a realistic result — any leak that does appear will
 be Low confidence (too little sample, too few comparable locations,
 exactly the anti-gaming floors in `src/lib/revenue-leaks/` working as
 intended), and some metrics may report nothing at all if fewer than 2
-locations have data for them. What's real either way: `transactions`/
-`transaction_items` rows exist, `metric_snapshots` were computed by the
-Phase 4 engine, and detection ran an actual benchmark comparison across
-whatever locations reported each metric. Upload a larger export (more
-locations, more transactions per location) for results that mean
-something, or click **Detect Leaks** on `/manager/leaks` any time to
-re-run detection against whatever data currently exists without
-uploading again.
+locations have data for them. The sample's employees are the same seven
+"Beverage Boost" challenge participants, so the import result will also
+show challenge progress updates — expect their `current_value` to swing
+wildly (most have exactly one transaction in the sample, so it's 0% or
+100%, nothing in between) while `best_value`/`points_earned` correctly
+never regress below what they'd already earned from the seeded data.
+That's the real mechanism behaving honestly on a tiny sample, not a bug.
+What's real either way: `transactions`/`transaction_items` rows exist,
+`metric_snapshots` were computed by the Phase 4 engine, and detection ran
+an actual benchmark comparison across whatever locations reported each
+metric. Upload a larger export (more locations, more transactions per
+location, more than one order per employee) for results that mean
+something, or click **Detect Leaks** on `/manager/leaks` / **Update
+Progress** on a challenge's detail page any time to re-run either against
+whatever data currently exists without uploading again.
 
 ### Dev-only role switcher
 
@@ -207,9 +222,10 @@ src/
   app/
     login/            sign-in page + server actions
     manager/           Rev Catcher screens (role-gated) — home, leaks (+ leaks/[id]
-                         and a manual Detect Leaks trigger), goals (list + [id] +
-                         new builder), people, settings, settings/data-sources
-                         (CSV import wizard + history)
+                         and a manual Detect Leaks trigger), goals (list + [id]
+                         with a manual Update Progress trigger + new builder),
+                         people, settings, settings/data-sources (CSV import
+                         wizard + history)
     employee/          Rev Rewards screens (role-gated) — home, missions, ranks,
                          points, rewards (+ the reward-redemption server action)
     page.tsx            role-based landing redirect
@@ -229,7 +245,10 @@ src/
       manager.ts           server-only read layer for every manager screen
       employee.ts           server-only read layer for every employee screen
       rewards.ts             reward catalog reads (role-agnostic — used by both)
-    challenges/            deterministic goal-builder recommendation math
+    challenges/            deterministic goal-builder recommendation math +
+                           progress.ts (tier crossing, rankings, team goal/
+                           challenge completion) — update-progress.ts is the
+                           one piece that writes to the database
     gamification/          level/XP formula + streak milestone math (spec §15)
     metrics/                the real metric engine (spec §7) — pure functions +
                            *.test.ts beside each module (`npm test`); recalculate.ts

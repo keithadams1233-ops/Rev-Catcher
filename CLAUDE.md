@@ -101,9 +101,20 @@ substantial phases rather than cascading into the next one unprompted.
    upserts `revenue_leaks` — run automatically after CSV import and
    manually via "Detect Leaks" on `/manager/leaks`. Manager-configurable
    category rules and contribution margins are still just defaults, not
-   persisted — same deferral as Phase 4. *(current state of this repo)*
-7. Challenge engine (creation, participants, tiers, team goals, baseline,
-   progress updates, rankings, completion).
+   persisted — same deferral as Phase 4.
+7. **Challenge engine** ✅ — creation/participants/tiers/team
+   goals/baseline were real as of Phase 2; Phase 7 adds
+   `src/lib/challenges/update-progress.ts`: reads each participant's own
+   latest `metric_snapshot`, awards `challenge_tiers.points_awarded` to
+   `point_ledger` idempotently on newly-crossed tiers (same source_type +
+   source_id pattern as everywhere else), recomputes rankings, updates
+   team goals (flat bonus to everyone on completion), and flips a
+   challenge to `completed` once `end_date` passes. Baseline is now a
+   real per-employee `metric_snapshot` lookup at launch, falling back to
+   the leak's location-level value only when an employee has none yet.
+   Run automatically after CSV import (closing out every step of spec
+   §19) and manually via "Update Progress" on a challenge's detail page.
+   *(current state of this repo)*
 8. Gamification engine (points, XP, levels, streaks, daily missions,
    badges, notifications).
 9. ROI report (before/after challenge measurement).

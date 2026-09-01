@@ -286,6 +286,16 @@ export function ImportWizard({ savedMapping }: { savedMapping: ColumnMapping | n
               </Link>
             </p>
           )}
+          {(result.challengeParticipantsUpdated > 0 || result.challengesCompleted > 0) && (
+            <p className="mt-1 text-xs text-manager-muted">
+              Challenge progress: {result.challengeParticipantsUpdated} participants updated,{" "}
+              {result.challengeTiersAwarded} tiers newly awarded, {result.challengesCompleted} challenges
+              completed.{" "}
+              <Link href="/manager/goals" className="font-medium text-manager-accent hover:underline">
+                View goals
+              </Link>
+            </p>
+          )}
         </div>
 
         {result.errors.length > 0 && (

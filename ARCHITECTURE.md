@@ -2,9 +2,10 @@
 
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
 Phase 3 (Employee UI), Phase 4 (Real Metric Engine), Phase 5 (CSV
-Import), and Phase 6 (Revenue Leak Engine). Sections describing engines
-that don't exist yet are marked "planned" — they document the design
-those phases will implement against, not what's running today.
+Import), Phase 6 (Revenue Leak Engine), and Phase 7 (Challenge Engine).
+Sections describing engines that don't exist yet are marked "planned" —
+they document the design those phases will implement against, not what's
+running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -349,10 +350,12 @@ only the latest upload would silently discard everything imported before
 it. At pilot scale (thousands of transactions, not millions) re-scanning
 everything on every import is cheap enough that a smarter incremental
 approach isn't worth the complexity yet. Metric recalculation is
-immediately followed by revenue leak detection (spec §19 step 8 — see
-"Revenue leak detection" below), so a successful import can turn directly
-into new or updated `revenue_leaks` rows without any extra manager
-action.
+immediately followed by revenue leak detection and then challenge progress
+updates (spec §19 steps 8-9 — see "Revenue leak detection" and "Challenge
+engine" below), so a successful import can turn directly into updated
+`revenue_leaks` and `challenge_participants`/`team_goals` rows, tier
+points awarded, and challenges completed, without any extra manager
+action. That closes out every step of spec §19's CSV import list.
 
 **Pilot-scale constraint, stated rather than hidden:** the importer caps
 at 5,000 rows per upload (`MAX_ROWS` in the Server Action) and Next's
@@ -438,29 +441,75 @@ same as any other leak a manager has already acted on.
 
 ## Challenge engine
 
-Schema and UI are real as of Phase 2; the *automated* pieces (metric-driven
-progress updates, tier/ranking recalculation as new POS data lands,
-completion + ROI measurement) are still Phase 7/9. What exists now:
+Schema and UI were real as of Phase 2 (creation, tiers, team goals,
+baseline, launch); Phase 7 adds the automated piece that needed the
+metric engine (Phase 4) to exist first — progress updates, rankings, and
+completion.
 
 `challenges` → `challenge_tiers` (points per threshold) → `challenge_participants`
 (one row per employee, baseline/current/best value + points earned) →
 optional `team_goals` (location-wide threshold, flat bonus to everyone on
 completion if hit). The goal builder
 (`src/app/manager/goals/new/actions.ts`) launches a challenge for real:
-creates `challenge_participants` for every employee at the location
-(baseline = the leak's `current_value` — there's no per-employee metric
-snapshot to seed a real individual baseline from until Phase 4 exists),
-fires a `new_challenge` notification per participant, and flips the source
-leak to `challenge_created`, all sequentially through the manager's own
+creates `challenge_participants` for every employee at the location, fires
+a `new_challenge` notification per participant, and flips the source leak
+to `challenge_created`, all sequentially through the manager's own
 RLS-scoped session (see "Manager data-access layer" above for why this
-isn't one DB transaction yet). Employees never see a challenge without also
-seeing their baseline.
+isn't one DB transaction yet). **Baseline is now a real per-employee
+lookup** (Phase 7): each participant's `baseline_value` comes from their
+own latest `metric_snapshot` at the challenge's location/metric if one
+exists, falling back to the leak's location-level `current_value` only for
+an employee with no individual data yet (brand new, or before any CSV
+import) — the simplification Phase 2 flagged as deferred until Phase 4
+existed to produce that snapshot.
 
-Progress *tracking* — a participant's `current_value` moving as real
-transactions come in, `rank` being recalculated, `team_goals.current_value`
-updating — has no automated writer yet; those columns only get sensible
-values today from the hand-seeded demo challenge ("Beverage Boost"). That
-automation is Phase 7's job, once Phase 4's metric engine exists to feed it.
+**Progress updates, rankings, and completion** (`src/lib/challenges/`):
+
+- **`progress.ts`** — pure functions, same discipline as every other
+  engine in this app. `computeParticipantUpdate` tracks tiers against
+  `bestValue` (peak-ever, not the latest reading) so a bad reading after a
+  tier is earned never claws points back — matches
+  `challenge_participants.best_value`'s evident purpose in the schema.
+  `computeRankings` is a plain descending sort (no tie-splitting — spec
+  doesn't call for competition-style 1-1-3 ranking). `computeTeamGoalUpdate`
+  flags completion only on the crossing turn, never re-firing.
+  `isChallengeExpired` is a plain `today > end_date` string comparison
+  (both already `YYYY-MM-DD`) — no `Date`-object timezone footguns.
+- **`update-progress.ts`** (server-only) — for every `active` challenge,
+  pulls each participant's own latest employee-level `metric_snapshot`
+  (location + employee + metric all matching the challenge) and applies
+  the update; a participant with no new snapshot yet is left untouched
+  rather than overwritten with a stale re-read. Newly crossed tiers award
+  `point_ledger` rows through the same idempotent
+  `source_type`+`source_id` pattern used everywhere else in this app (the
+  partial unique index is the backstop; an existence check is what makes
+  a re-run a no-op instead of a constraint error). A team goal reads the
+  location-level snapshot the same way and, on crossing, awards its flat
+  bonus to every participant. A challenge whose `end_date` has passed
+  flips to `completed`.
+- **Points, not XP, and no notifications yet — a deliberate scope
+  boundary.** Phase 8 owns XP/streaks/missions/badges/notifications, but
+  a challenge tier *is* a points reward
+  (`challenge_tiers.points_awarded`) — "progress updates" for a
+  challenge is meaningless without awarding it, so that award happens
+  here, using ledger infrastructure that's existed since Phase 1. Nothing
+  else gamification-shaped (XP, streak advancement, badge criteria,
+  `points_earned`/`team_goal_progress`/`challenge_completed`
+  notifications) is touched by this module.
+
+**Wired to two triggers**, same pattern as leak detection: automatically
+at the end of a successful CSV import, right after leak detection (spec
+§19 step 9 — the last item on that list, which this closes out entirely),
+and manually via an "Update Progress" button on a challenge's detail page
+(`/manager/goals/[id]`) for re-running without a new upload.
+
+**What this means for the demo data**: same coexistence pattern as Phase 6's
+leak detection — the hand-seeded "Beverage Boost" participant values
+(`scripts/seed.ts`) stay exactly as seeded until a real CSV import produces
+employee-level `metric_snapshots` for those specific employees at Store
+#37; this module was deliberately not backported into the seed script to
+keep it demonstrating the real mechanism (live data → real update) rather
+than a seed script pre-computing what the engine would have produced.
 
 ## Future POS adapter design (planned)
 

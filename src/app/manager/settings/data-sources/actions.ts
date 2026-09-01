@@ -5,6 +5,7 @@ import { getCurrentProfile, isManagerRole } from "@/lib/auth/get-current-profile
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { recalculateMetricSnapshots } from "@/lib/metrics/recalculate";
 import { detectRevenueLeaks } from "@/lib/revenue-leaks/detect";
+import { updateChallengeProgress } from "@/lib/challenges/update-progress";
 import {
   applyMapping,
   validateRows,
@@ -39,6 +40,9 @@ export interface ImportCsvResult {
   leaksCreated: number;
   leaksUpdated: number;
   leaksResolved: number;
+  challengeParticipantsUpdated: number;
+  challengeTiersAwarded: number;
+  challengesCompleted: number;
 }
 
 /**
@@ -162,6 +166,9 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     let leaksCreated = 0;
     let leaksUpdated = 0;
     let leaksResolved = 0;
+    let challengeParticipantsUpdated = 0;
+    let challengeTiersAwarded = 0;
+    let challengesCompleted = 0;
 
     if (transactionsToInsert.length > 0) {
       const { data: insertedTx, error: insertTxError } = await supabase
@@ -208,6 +215,12 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
       leaksCreated = detectionResult.leaksCreated;
       leaksUpdated = detectionResult.leaksUpdated;
       leaksResolved = detectionResult.leaksResolved;
+
+      // spec §19 step 9: ...and updates challenge progress.
+      const progressResult = await updateChallengeProgress(organizationId);
+      challengeParticipantsUpdated = progressResult.participantsUpdated;
+      challengeTiersAwarded = progressResult.tiersAwarded;
+      challengesCompleted = progressResult.challengesCompleted;
     }
 
     const timestamps = [...resolved.values()].map((r) => r.group.timestamp);
@@ -231,6 +244,7 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     revalidatePath("/manager/settings/data-sources");
     revalidatePath("/manager");
     revalidatePath("/manager/leaks");
+    revalidatePath("/manager/goals");
 
     return {
       result: {
@@ -242,6 +256,9 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
         errors: rowErrors.slice(0, MAX_ERRORS_RETURNED),
         errorsTruncated: rowErrors.length > MAX_ERRORS_RETURNED,
         snapshotsWritten,
+        challengeParticipantsUpdated,
+        challengeTiersAwarded,
+        challengesCompleted,
         leaksCreated,
         leaksUpdated,
         leaksResolved,

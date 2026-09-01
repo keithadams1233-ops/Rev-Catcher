@@ -64,6 +64,26 @@ export async function launchChallenge(
     return { error: "No employees are assigned to this location yet — add employees before launching a challenge." };
   }
 
+  // Prefer each employee's own latest metric_snapshot as their baseline —
+  // real per-employee data once a CSV import has produced one. Falls back
+  // to the leak's location-level current_value for anyone without one yet
+  // (a brand-new employee, or before any POS data has been imported).
+  const { data: employeeSnapshots, error: snapshotsError } = await supabase
+    .from("metric_snapshots")
+    .select("employee_id, value, created_at")
+    .eq("organization_id", organizationId)
+    .eq("location_id", leak.location_id)
+    .eq("metric_code", leak.metric_code)
+    .in("employee_id", employeeIds)
+    .order("created_at", { ascending: false });
+  if (snapshotsError) return { error: snapshotsError.message };
+
+  const baselineByEmployee = new Map<string, number>();
+  for (const s of employeeSnapshots ?? []) {
+    if (!s.employee_id || baselineByEmployee.has(s.employee_id)) continue;
+    baselineByEmployee.set(s.employee_id, s.value);
+  }
+
   const projected = scaleOpportunityToTarget(
     leak.estimated_incremental_revenue,
     leak.estimated_contribution_profit,
@@ -125,15 +145,18 @@ export async function launchChallenge(
   }
 
   const { error: participantsError } = await supabase.from("challenge_participants").insert(
-    employeeIds.map((employeeId) => ({
-      challenge_id: challengeId,
-      employee_id: employeeId,
-      baseline_value: leak.current_value,
-      current_value: leak.current_value,
-      best_value: leak.current_value,
-      points_earned: 0,
-      completed: false,
-    })),
+    employeeIds.map((employeeId) => {
+      const baseline = baselineByEmployee.get(employeeId) ?? leak.current_value;
+      return {
+        challenge_id: challengeId,
+        employee_id: employeeId,
+        baseline_value: baseline,
+        current_value: baseline,
+        best_value: baseline,
+        points_earned: 0,
+        completed: false,
+      };
+    }),
   );
   if (participantsError) return { error: participantsError.message };
 

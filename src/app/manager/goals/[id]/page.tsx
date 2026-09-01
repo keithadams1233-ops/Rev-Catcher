@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/manager/status-badge";
 import { StatCard } from "@/components/manager/stat-card";
 import { ProgressBar, progressPercent } from "@/components/manager/progress-bar";
 import { CancelChallengeButton } from "@/components/manager/cancel-challenge-button";
+import { UpdateProgressButton } from "@/components/manager/update-progress-button";
 import {
   formatCurrency,
   formatMetricValue,
@@ -148,7 +149,10 @@ export default async function ChallengeDetailPage({ params }: { params: Promise<
         </div>
       </section>
 
-      {canCancel && <CancelChallengeButton challengeId={challenge.id} />}
+      <div className="flex items-center gap-3">
+        {challenge.status === "active" && <UpdateProgressButton />}
+        {canCancel && <CancelChallengeButton challengeId={challenge.id} />}
+      </div>
     </div>
   );
 }
