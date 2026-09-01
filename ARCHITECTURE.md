@@ -3,10 +3,10 @@
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
 Phase 3 (Employee UI), Phase 4 (Real Metric Engine), Phase 5 (CSV
 Import), Phase 6 (Revenue Leak Engine), Phase 7 (Challenge Engine),
-Phase 8 (Gamification Engine), and Phase 9 (ROI Report). Sections
-describing engines that don't exist yet are marked "planned" — they
-document the design those phases will implement against, not what's
-running today.
+Phase 8 (Gamification Engine), Phase 9 (ROI Report), and Phase 10
+(Pilot Hardening). Sections describing engines that don't exist yet are
+marked "planned" — they document the design those phases will implement
+against, not what's running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -693,6 +693,118 @@ import, as the last step of the pipeline (`src/app/manager/settings/data-sources
 — after metric recalculation, leak detection, and challenge progress,
 since badge criteria (`level_reached`, `challenge_rank_max`) depend on
 everything computed before it in the same run.
+
+## Pilot hardening
+
+Spec's Phase 10 build order lists ten concerns. Most of them were already
+real by the time this phase started — every prior phase's own discipline
+(anti-gaming floors, idempotent ledgers, environment-agnostic
+validation shared between client preview and server authority) already
+covered most of what "pilot hardening" asks for. This phase's job was to
+verify that claim item by item, not assume it, and fix what wasn't
+actually true yet:
+
+- **Corrupted CSV** — `src/lib/csv-import/validate-row.ts` already
+  rejects a malformed row (missing/unparseable transaction ID,
+  timestamp, location, item name, quantity, price) individually rather
+  than failing the whole file; `parse-csv.ts` already handles an empty
+  file, a header-only file, and blank lines. Confirmed still true, no
+  changes needed.
+- **Duplicate uploads** — dedup by `external_transaction_id` was already
+  real (Phase 5). What wasn't real: `pos_imports.status` marked a
+  100%-duplicate re-upload `failed`, which is wrong — nothing actually
+  failed, the dedupe worked exactly as designed. Fixed in
+  `src/app/manager/settings/data-sources/actions.ts`: `completed`
+  whenever anything either imported or was recognized as an
+  already-known duplicate; `failed` only when a file produced nothing
+  usable at all (every row errored or referenced data that doesn't
+  exist).
+- **Refunds/voids** — `isCleanTransaction`/`isCleanItem`
+  (`src/lib/metrics/eligibility.ts`) already exclude anything touched by
+  a void or *any* refund, at both the transaction and line-item grain,
+  from every detector. Confirmed still true.
+- **Missing employee IDs** — an unresolvable employee identifier already
+  imports the transaction with `employee_id = null` rather than
+  rejecting the row (Phase 5's CSV import). Confirmed still true.
+- **Location changes** — the one genuine gap: `locations.active` has
+  existed in the schema since Phase 1 (and is displayed in Settings) but
+  nothing ever *used* it. Now it's enforced in three places: CSV import
+  rejects a row targeting an inactive location with a specific error
+  (`data-sources/actions.ts`); `detectRevenueLeaks` fetches active
+  location ids first and excludes inactive ones from both the benchmark
+  input and new-leak generation, since a closed store's numbers are
+  frozen, not comparable to ones still operating (`detect.ts`);
+  `launchChallenge` refuses to launch a new challenge against an
+  inactive-location leak (`goals/new/actions.ts`). None of this touches
+  a location's *existing* open leak or running challenge — those are
+  left exactly as they are, same "never overwrite what a manager
+  already acted on" principle the leak/challenge engines already follow
+  elsewhere. Editing a location's own `active` flag is still explicitly
+  deferred ("ships in a later phase," per Settings' own copy) — this
+  phase makes the column meaningful, not editable.
+- **Small samples** — `MIN_DENOMINATOR_TO_REPORT` (leak detection),
+  `MIN_SAMPLE_SIZE_FOR_OUTLIER_EXCLUSION` (average ticket), and
+  `MIN_SAMPLE_FOR_RATE_MISSION` (Phase 8 rate missions) all already
+  exist as anti-gaming floors. Confirmed still true.
+- **Challenge cancellation** — `cancelChallenge()`
+  (`goals/[id]/actions.ts`) already existed (Phase 2), flips a challenge
+  to `cancelled`, and `update-progress.ts`/`update-gamification.ts`
+  both already filter to `status = 'active'` challenges, so a cancelled
+  challenge stops accumulating anything the moment it's cancelled.
+  Points already earned before cancellation are deliberately left alone
+  — same "never claw back what was already earned" principle as a
+  challenge tier's `best_value` tracking. Confirmed still true.
+- **Point reversals** — the other genuine gap: `reward_redemptions` had
+  a `pending → approved/fulfilled/cancelled` status lifecycle in the
+  schema since Phase 1 (RLS even already had a "managers can update
+  status" policy anticipating this) but nothing in the app ever moved a
+  redemption past `pending` or reversed its point debit. New:
+  `cancelRedemption()` (`src/app/manager/people/actions.ts`) flips a
+  `pending` redemption to `cancelled` and credits the points back via a
+  *new* `point_ledger` row (`transaction_type: 'reversal'`) rather than
+  editing or deleting the original debit — `point_ledger` stays
+  append-only either way (CLAUDE.md rule #2). The reversal reuses the
+  original debit's `source_id` (the redemption row) but under its own
+  `source_type` (`redemption_reversal`, not `reward_redemption`) — the
+  debit already occupies that `(employee_id, source_type, source_id)`
+  key, so the reversal needs a different one to insert at all, and that
+  same key is what makes cancelling the same redemption twice a no-op
+  instead of a double refund. `listPendingRedemptions()`
+  (`src/lib/data/manager.ts`) + a new "Pending redemptions" section on
+  `/manager/people` is the manager-facing surface for it. **Known
+  trade-off, not fixed here**: `redeemReward()`'s balance check and its
+  ledger insert aren't one atomic transaction, so two concurrent
+  redemption requests from the same employee could theoretically both
+  pass the balance check before either commits, overspending by one
+  redemption's worth of points — a real Postgres transaction (a
+  `plpgsql` RPC, same category of fix `ARCHITECTURE.md`'s "Manager
+  data-access layer" section already flags for the goal builder's
+  sequential inserts) would close this, but a single pilot employee
+  double-tapping fast enough to race their own request is a low-odds
+  edge case not worth the added complexity yet.
+- **Unauthorized access** — audited both layers rather than assuming:
+  every one of the 26 tables in the schema has RLS enabled with a real
+  policy (verified by diffing `create table` names against `alter table
+  ... enable row level security` names — no gaps), and every Server
+  Action under `src/app/**/actions.ts` checks the caller's role
+  (`isManagerRole`) and sources `organization_id` from their own
+  profile, never from client input, before doing anything — the same
+  pattern CLAUDE.md rule #3 requires of every service-role code path.
+  Confirmed already true everywhere, no changes needed.
+- **Mobile responsiveness** — every wide table already had an
+  `overflow-x-auto` wrapper and a `min-w-[...]` floor (import preview,
+  people roster, challenge standings, the new pending-redemptions
+  table), and every multi-column stat grid already collapses at a
+  smaller breakpoint (`grid-cols-2 md:grid-cols-4`, the pattern
+  `StatCard` rows use everywhere including the new ROI tiles).
+  Confirmed still true at 375-430px.
+- **Empty states** — every screen that can legitimately have zero rows
+  already has one: no revenue leaks, no challenges, no imports, no
+  point activity, no missions today, no active challenge to rank on, no
+  one matching a People filter. Badges intentionally *hide* their
+  section entirely when empty rather than showing a "no badges yet"
+  message — a deliberate choice (badges are a bonus, not core
+  navigation), not an oversight. Confirmed still true.
 
 ## Future POS adapter design (planned)
 

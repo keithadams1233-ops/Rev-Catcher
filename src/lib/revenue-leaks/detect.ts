@@ -35,20 +35,32 @@ export interface DetectionSummary {
 export async function detectRevenueLeaks(organizationId: string): Promise<DetectionSummary> {
   const supabase = createServiceRoleClient();
 
-  const { data: snapshots, error } = await supabase
-    .from("metric_snapshots")
-    .select("*")
-    .eq("organization_id", organizationId)
-    .is("employee_id", null)
-    .order("created_at", { ascending: false });
+  const [{ data: snapshots, error }, { data: activeLocations, error: locError }] = await Promise.all([
+    supabase
+      .from("metric_snapshots")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .is("employee_id", null)
+      .order("created_at", { ascending: false }),
+    supabase.from("locations").select("id").eq("organization_id", organizationId).eq("active", true),
+  ]);
 
   if (error) throw error;
+  if (locError) throw locError;
   if (!snapshots || snapshots.length === 0) return { leaksCreated: 0, leaksUpdated: 0, leaksResolved: 0 };
+
+  // A closed/inactive location (spec §10 "location changes") never feeds
+  // the benchmark and never gets a new leak — its numbers are frozen in
+  // time, not comparable to locations still operating, and there's no
+  // "opportunity" left to report for a store that's shut down. Any leak
+  // already open for it stays exactly as it was, untouched by this run.
+  const activeLocationIds = new Set((activeLocations ?? []).map((l) => l.id));
 
   // Most recent snapshot per (location, metric) — rows are already
   // ordered newest-first, so the first one seen per key wins.
   const latestByKey = new Map<string, MetricSnapshot>();
   for (const s of snapshots) {
+    if (!activeLocationIds.has(s.location_id)) continue;
     const key = `${s.location_id}:${s.metric_code}`;
     if (!latestByKey.has(key)) latestByKey.set(key, s);
   }

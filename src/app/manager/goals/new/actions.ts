@@ -42,6 +42,16 @@ export async function launchChallenge(
   if (leakError) return { error: leakError.message };
   if (!leak) return { error: "That revenue leak couldn't be found." };
 
+  const { data: location, error: locationError } = await supabase
+    .from("locations")
+    .select("active")
+    .eq("id", leak.location_id)
+    .maybeSingle();
+  if (locationError) return { error: locationError.message };
+  if (location && !location.active) {
+    return { error: "This leak's location is inactive — reactivate it in Settings before launching a challenge." };
+  }
+
   const { data: existingChallenge, error: existingError } = await supabase
     .from("challenges")
     .select("id")

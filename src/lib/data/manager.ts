@@ -508,6 +508,62 @@ export async function listEmployeeRoster(organizationId: string): Promise<Employ
   }));
 }
 
+export interface PendingRedemption {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  rewardName: string;
+  pointsSpent: number;
+  dollarValue: number;
+  redeemedAt: string;
+}
+
+/**
+ * Spec §10 "point reversals" — a manager needs to see and undo a
+ * redemption before it's fulfilled. Only `pending` rows: `approved`/
+ * `fulfilled` mean the reward already went out the door, and `cancelled`
+ * is already reversed — see `cancelRedemption` in
+ * `src/app/manager/people/actions.ts`.
+ */
+export async function listPendingRedemptions(organizationId: string): Promise<PendingRedemption[]> {
+  const supabase = await createClient();
+
+  const { data: redemptions, error } = await supabase
+    .from("reward_redemptions")
+    .select("id, employee_id, reward_id, points_spent, dollar_value, redeemed_at")
+    .eq("organization_id", organizationId)
+    .eq("status", "pending")
+    .order("redeemed_at", { ascending: true });
+
+  if (error) throw error;
+  if (!redemptions || redemptions.length === 0) return [];
+
+  const employeeIds = Array.from(new Set(redemptions.map((r) => r.employee_id)));
+  const rewardIds = Array.from(new Set(redemptions.map((r) => r.reward_id)));
+
+  const [{ data: profiles, error: profileError }, { data: rewards, error: rewardError }] = await Promise.all([
+    supabase.from("profiles").select("id, first_name, last_name, email").in("id", employeeIds),
+    supabase.from("reward_catalog").select("id, name").in("id", rewardIds),
+  ]);
+  if (profileError) throw profileError;
+  if (rewardError) throw rewardError;
+
+  const nameByEmployee = new Map(
+    (profiles ?? []).map((p) => [p.id, `${p.first_name} ${p.last_name}`.trim() || p.email]),
+  );
+  const nameByReward = new Map((rewards ?? []).map((r) => [r.id, r.name]));
+
+  return redemptions.map((r) => ({
+    id: r.id,
+    employeeId: r.employee_id,
+    employeeName: nameByEmployee.get(r.employee_id) ?? "Unknown employee",
+    rewardName: nameByReward.get(r.reward_id) ?? "Unknown reward",
+    pointsSpent: r.points_spent,
+    dollarValue: r.dollar_value,
+    redeemedAt: r.redeemed_at,
+  }));
+}
+
 export interface EmployeeAtLocation {
   id: string;
   name: string;

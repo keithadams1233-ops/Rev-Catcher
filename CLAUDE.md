@@ -154,11 +154,44 @@ substantial phases rather than cascading into the next one unprompted.
    — real numbers as of this phase, previously a `null` placeholder).
    No new trigger: a challenge's own completion (Phase 7) is what makes
    a real report available; nothing separate to run.
-   *(current state of this repo)*
-10. Pilot hardening (empty states, corrupted CSV, duplicate uploads,
-    refunds/voids, missing employee IDs, location changes, small samples,
-    challenge cancellation, point reversals, unauthorized access, mobile
-    responsiveness).
+10. **Pilot hardening** ✅ — most of this list was already real by
+    construction from prior phases' own discipline (anti-gaming floors,
+    idempotent ledgers, environment-agnostic validation); audited each
+    item and fixed the two genuine gaps found:
+    - **Location changes**: `locations.active` (schema since Phase 1,
+      never enforced anywhere) now actually gates things — CSV import
+      rejects a row targeting an inactive location with a clear error,
+      `detectRevenueLeaks` excludes inactive locations from both
+      benchmarking and new leaks (a closed store's numbers are frozen,
+      not comparable), and `launchChallenge` refuses to launch against
+      an inactive-location leak. An already-open leak or already-running
+      challenge at a location that goes inactive is left alone either
+      way — same "don't overwrite what a manager already acted on"
+      principle as everywhere else.
+    - **Point reversals**: reward redemptions had a `pending` →
+      `fulfilled` lifecycle in the schema since Phase 1 but no way to
+      undo one. `cancelRedemption()` (`src/app/manager/people/actions.ts`)
+      flips a pending redemption to `cancelled` and reverses the point
+      debit via a new, idempotent `point_ledger` row
+      (`transaction_type: 'reversal'`, its own `source_type` so it can't
+      collide with the original debit's idempotency key) — a "Pending
+      redemptions" section on `/manager/people` is the new manager
+      surface for it.
+    - **Duplicate uploads**: found and fixed a real bug while auditing
+      this one — a CSV that's 100% already-imported duplicates got
+      marked `failed` in `pos_imports` (misleadingly, since nothing was
+      actually wrong). Now `completed` whenever anything either
+      imported or was recognized as a known duplicate; `failed` is
+      reserved for a file that produced nothing usable at all.
+    - Everything else on the list — corrupted CSV, refunds/voids,
+      missing employee IDs, small samples, challenge cancellation,
+      unauthorized access, mobile responsiveness — was audited and
+      confirmed already handled by earlier phases (RLS on all 26
+      tables verified complete; every Server Action checks role + org
+      before writing); see ARCHITECTURE.md's "Pilot hardening" section
+      for the specifics of what was checked and why nothing else needed
+      changing.
+    *(current state of this repo)*
 
 ## Conventions
 

@@ -99,13 +99,15 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     const groups = groupIntoTransactions(validRows);
 
     const [{ data: locations, error: locError }, { data: profiles, error: profileError }] = await Promise.all([
-      supabase.from("locations").select("id, name").eq("organization_id", organizationId),
+      supabase.from("locations").select("id, name, active").eq("organization_id", organizationId),
       supabase.from("profiles").select("id, email, first_name, last_name").eq("organization_id", organizationId),
     ]);
     if (locError) throw locError;
     if (profileError) throw profileError;
 
-    const locationByName = new Map((locations ?? []).map((l) => [l.name.toLowerCase(), l.id]));
+    const locationByName = new Map(
+      (locations ?? []).map((l) => [l.name.toLowerCase(), { id: l.id, active: l.active }]),
+    );
     const employeeByEmail = new Map((profiles ?? []).map((p) => [p.email.toLowerCase(), p.id]));
     const employeeByName = new Map(
       (profiles ?? []).map((p) => [`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id]),
@@ -135,14 +137,22 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
         continue;
       }
 
-      const locationId = locationByName.get(group.locationName.toLowerCase());
-      if (!locationId) {
+      const location = locationByName.get(group.locationName.toLowerCase());
+      if (!location) {
         rowErrors.push({
           rowNumber: 0,
           message: `Unknown location "${group.locationName}" (transaction ${group.externalTransactionId}) — add it in Settings first.`,
         });
         continue;
       }
+      if (!location.active) {
+        rowErrors.push({
+          rowNumber: 0,
+          message: `Location "${group.locationName}" is inactive (transaction ${group.externalTransactionId}) — reactivate it in Settings before importing new data for it.`,
+        });
+        continue;
+      }
+      const locationId = location.id;
 
       let employeeId: string | null = null;
       if (group.employeeIdentifier) {
@@ -248,10 +258,19 @@ export async function importCsv(input: ImportCsvInput): Promise<{ result: Import
     const dateStart = timestamps.length > 0 ? timestamps.reduce((a, b) => (b < a ? b : a)).slice(0, 10) : null;
     const dateEnd = timestamps.length > 0 ? timestamps.reduce((a, b) => (b > a ? b : a)).slice(0, 10) : null;
 
+    // Zero new transactions isn't automatically a failure (spec §10
+    // "duplicate uploads") — re-uploading a file that's entirely already
+    // imported is a legitimate no-op, not broken. Only mark `failed` when
+    // nothing usable came out of the file at all: no new rows *and*
+    // nothing was recognized as an already-known duplicate either, i.e.
+    // every row was either malformed or referenced data that doesn't
+    // exist (an unknown/inactive location, say).
+    const status = transactionsToInsert.length > 0 || skippedDuplicateCount > 0 ? "completed" : "failed";
+
     await supabase
       .from("pos_imports")
       .update({
-        status: transactionsToInsert.length > 0 ? "completed" : "failed",
+        status,
         error_count: rowErrors.length,
         date_start: dateStart,
         date_end: dateEnd,
