@@ -7,7 +7,7 @@ and turns fixing them into employee challenges. Two experiences, one app:
 - **Rev Rewards** (`/employee`) — frontline employees.
 
 This repo is being built phase by phase (see `CLAUDE.md` / the master spec).
-**Phases 1–8 are implemented**: Next.js + Supabase wiring, the full database
+**Phases 1–9 are implemented**: Next.js + Supabase wiring, the full database
 schema and RLS policies, authentication, role-based routing, a dev-only role
 switcher, the whole Rev Catcher manager experience (home, revenue leaks,
 goal builder, challenge tracking, people, settings), the whole Rev Rewards
@@ -21,10 +21,13 @@ gap, revenue/profit opportunity, confidence classification, unit tested
 against the spec's own worked example), the challenge engine's automated
 half (`src/lib/challenges/update-progress.ts` — real progress updates, tier
 point awards, team goal completion, rankings, and challenge completion, all
-driven by the metric engine's own output), and the gamification engine
+driven by the metric engine's own output), the gamification engine
 (`src/lib/gamification/` — daily mission progress, XP/level recalculation,
 streak advancement, and badge criteria, unit tested, all driven off the
-same real transaction data).
+same real transaction data), and the ROI report (`src/lib/roi/` — real
+before/after challenge measurement: actual revenue/profit recovered and
+reward ROI, reusing the leak engine's own formula fed a challenge's real
+before/after values instead of a projected estimate).
 
 Every screen reads real rows through Supabase (not mocks). Uploading real
 POS data now runs the *entire* pipeline for real: CSV import → transactions
@@ -39,7 +42,14 @@ real data exists for their location/metric or employee (a leak already
 turned into a challenge, or a challenge tier already awarded, is left alone
 either way — see ARCHITECTURE.md).
 
-Every engine in the spec is now real. What's deliberately still deferred
+Every engine in the spec is now real, and Phase 9 adds real reporting on
+top of them: once a challenge completes, its detail page shows an actual
+before/after measurement (not the launch-time projection) — real revenue
+and profit recovered, the real reward cost actually paid out, and the
+resulting ROI multiplier — and Manager Home's "Recovered profit"/"Reward
+ROI" tiles sum the same numbers across every completed challenge, no
+longer the `null` placeholder from Phase 2. What's deliberately still
+deferred
 (documented in `ARCHITECTURE.md`'s "Gamification engine" section, not
 silently skipped): rank-based missions and `leaderboard_change`
 notifications (no persisted leaderboard-history to diff against), streak
@@ -195,7 +205,10 @@ transactions/snapshots/leaks/challenges correctly. Upload a larger export
 employee, dated today) for results that mean something, or click **Detect
 Leaks** on `/manager/leaks` / **Update Progress** on a challenge's detail
 page any time to re-run either against whatever data currently exists
-without uploading again.
+without uploading again. The seeded "Beverage Boost" challenge stays
+`active`, so its detail page won't show an ROI report yet — that section
+only appears once a challenge's `status` flips to `completed` (its
+`end_date` passing, checked by the same "Update Progress" job).
 
 ### Dev-only role switcher
 
@@ -275,7 +288,14 @@ src/
                            authoritative server-side re-validation both use these)
     revenue-leaks/          benchmark/opportunity/confidence math (spec §7-9),
                            pure + tested; detect.ts writes revenue_leaks, the
-                           one non-pure piece, run after every CSV import
+                           one non-pure piece, run after every CSV import;
+                           avg-item-price.ts is the shared attached-item
+                           pricing lookup both detect.ts and roi/ use
+    roi/                    real before/after challenge measurement (spec's
+                           Phase 9) — compute-roi.ts (pure, tested) reuses
+                           revenue-leaks' own formula; get-challenge-roi.ts
+                           is the one read-only piece with a Supabase client,
+                           called from data/manager.ts, nothing to trigger
     stats.ts                percentile()/mean(), shared by outlier fencing and
                            the top-quartile benchmark
     format.ts              currency/percent/confidence formatting, shared everywhere
@@ -293,4 +313,5 @@ samples/
 ```
 
 See `ARCHITECTURE.md` for the tenant model, schema relationships, and how
-each engine (metric, revenue leak, challenge, gamification) fits together.
+each engine (metric, revenue leak, challenge, gamification, ROI report)
+fits together.

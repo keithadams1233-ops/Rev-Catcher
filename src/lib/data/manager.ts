@@ -1,7 +1,10 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { computeChallengeRoi, type ChallengeRoiReport } from "@/lib/roi/get-challenge-roi";
+import { computeRewardRoi } from "@/lib/roi/compute-roi";
 import type { Tables } from "@/lib/types/database";
+import type { DetectorMetricCode } from "@/lib/metrics/types";
 
 /**
  * Server-only read layer for the manager (Rev Catcher) screens. Every
@@ -91,7 +94,7 @@ export async function getOpportunitySummary(organizationId: string): Promise<Opp
         .eq("status", "active"),
       supabase
         .from("challenges")
-        .select("id")
+        .select("id, location_id, metric_code, baseline_value")
         .eq("organization_id", organizationId)
         .eq("status", "completed"),
     ]);
@@ -109,16 +112,68 @@ export async function getOpportunitySummary(organizationId: string): Promise<Opp
     0,
   );
 
+  // Phase 9: real "before/after challenge measurement" (spec build order),
+  // summed across every completed challenge — see
+  // src/lib/roi/get-challenge-roi.ts for what "recovered" and "reward ROI"
+  // mean here. null (not 0) only when no challenge has completed yet, so
+  // the UI can still distinguish "nothing to show" from "measured zero."
+  let recoveredContributionProfit: number | null = null;
+  let rewardRoi: number | null = null;
+
+  if (completedChallenges && completedChallenges.length > 0) {
+    const reports = await Promise.all(
+      completedChallenges.map((c) =>
+        computeChallengeRoi(supabase, {
+          id: c.id,
+          organizationId,
+          locationId: c.location_id,
+          metricCode: c.metric_code as DetectorMetricCode,
+          baselineValue: c.baseline_value,
+        }),
+      ),
+    );
+
+    recoveredContributionProfit = reports.reduce((sum, r) => sum + r.actualContributionProfit, 0);
+    const totalRewardCost = reports.reduce((sum, r) => sum + r.actualRewardCost, 0);
+    rewardRoi = computeRewardRoi(recoveredContributionProfit, totalRewardCost);
+  }
+
   return {
     totalRevenueOpportunity,
     totalContributionProfit,
     openLeakCount: leaks?.length ?? 0,
     activeChallengeCount: activeChallenges?.length ?? 0,
-    // Phase 9 computes this from before/after metric snapshots once a
-    // challenge actually completes — no completed challenges exist yet.
-    recoveredContributionProfit: (completedChallenges?.length ?? 0) > 0 ? 0 : null,
-    rewardRoi: (completedChallenges?.length ?? 0) > 0 ? 0 : null,
+    recoveredContributionProfit,
+    rewardRoi,
   };
+}
+
+/**
+ * Single-challenge ROI report (spec's Phase 9 build order) — before/after
+ * values, actual incremental revenue/profit, real reward cost, and the
+ * resulting ROI multiplier. Only meaningful once a challenge has actually
+ * `completed`; returns `null` for any other status so the caller can show
+ * "available once this challenge completes" instead of a premature number.
+ */
+export async function getChallengeRoi(organizationId: string, challengeId: string): Promise<ChallengeRoiReport | null> {
+  const supabase = await createClient();
+
+  const { data: challenge, error } = await supabase
+    .from("challenges")
+    .select("id, location_id, metric_code, baseline_value, status")
+    .eq("organization_id", organizationId)
+    .eq("id", challengeId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!challenge || challenge.status !== "completed") return null;
+
+  return computeChallengeRoi(supabase, {
+    id: challenge.id,
+    organizationId,
+    locationId: challenge.location_id,
+    metricCode: challenge.metric_code as DetectorMetricCode,
+    baselineValue: challenge.baseline_value,
+  });
 }
 
 export async function listLeaks(organizationId: string): Promise<LeakListItem[]> {

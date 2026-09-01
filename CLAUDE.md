@@ -132,8 +132,29 @@ substantial phases rather than cascading into the next one unprompted.
    leaderboard-history infra), streak milestone bonus points (no safe
    idempotency key for a repeating same-employee event), and daily
    mission *generation* (missions stay manager/seed-created).
+9. **ROI report** ✅ — `src/lib/roi/`: `compute-roi.ts` (pure,
+   `computeActualImpact` + `computeRewardRoi`) deliberately reuses the
+   Phase 6 opportunity formula and the goal builder's `rewardRatio`
+   rather than a parallel "actual" formula that could drift from the
+   "projected" one — a challenge's real before/after values just take
+   the same `currentValue`/`benchmarkValue` slots a leak's
+   current-vs-benchmark comparison already fills.
+   `get-challenge-roi.ts` (server-only) reads the real inputs: `before`
+   is `challenges.baseline_value` (real since Phase 7), `after` is the
+   location's latest `metric_snapshot` for that metric, and reward cost
+   is the real `point_ledger` dollar total this challenge's tiers/team
+   goal actually paid out (not the launch-time `reward_budget`
+   estimate) — returns `dataAvailable: false` rather than a fabricated
+   number when no snapshot exists yet. `avg-item-price.ts` (extracted
+   out of Phase 6's `detect.ts`, which now calls it too) is the shared
+   attached-item pricing lookup both the projected and actual formulas
+   need. Wired into `getChallengeRoi()` (single challenge, shown on a
+   completed challenge's detail page) and `getOpportunitySummary()`
+   (org-wide sum, Manager Home's "Recovered profit"/"Reward ROI" tiles
+   — real numbers as of this phase, previously a `null` placeholder).
+   No new trigger: a challenge's own completion (Phase 7) is what makes
+   a real report available; nothing separate to run.
    *(current state of this repo)*
-9. ROI report (before/after challenge measurement).
 10. Pilot hardening (empty states, corrupted CSV, duplicate uploads,
     refunds/voids, missing employee IDs, location changes, small samples,
     challenge cancellation, point reversals, unauthorized access, mobile

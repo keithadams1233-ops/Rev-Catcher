@@ -2,10 +2,11 @@
 
 Status: reflects Phase 1 (Project Foundation), Phase 2 (Manager UI),
 Phase 3 (Employee UI), Phase 4 (Real Metric Engine), Phase 5 (CSV
-Import), Phase 6 (Revenue Leak Engine), Phase 7 (Challenge Engine), and
-Phase 8 (Gamification Engine). Sections describing engines that don't
-exist yet are marked "planned" — they document the design those phases
-will implement against, not what's running today.
+Import), Phase 6 (Revenue Leak Engine), Phase 7 (Challenge Engine),
+Phase 8 (Gamification Engine), and Phase 9 (ROI Report). Sections
+describing engines that don't exist yet are marked "planned" — they
+document the design those phases will implement against, not what's
+running today.
 
 ## Manager data-access layer (Phase 2)
 
@@ -515,6 +516,71 @@ employee-level `metric_snapshots` for those specific employees at Store
 #37; this module was deliberately not backported into the seed script to
 keep it demonstrating the real mechanism (live data → real update) rather
 than a seed script pre-computing what the engine would have produced.
+
+## ROI report
+
+Spec's Phase 9 build order: "before/after challenge measurement,"
+`src/lib/roi/` — the smallest engine in this app by design, because it
+doesn't introduce a new formula. It reuses two that already exist:
+
+- **`compute-roi.ts`** (pure, tested) — `computeActualImpact` calls
+  `revenue-leaks/opportunity.ts`'s `calculateOpportunity` directly, just
+  with a challenge's real `beforeValue`/`afterValue` filling the
+  `currentValue`/`benchmarkValue` slots a leak's current-vs-benchmark
+  comparison normally fills. Same formula, same anti-negative-recovery
+  behavior (a regression zeroes revenue/profit but leaves `actualGap`
+  as the real signed number, so a regression is visible rather than
+  hidden), same `average_ticket` special case. `computeRewardRoi` is
+  just the goal builder's `rewardRatio` (`src/lib/challenges/recommendations.ts`)
+  called on actual numbers instead of projected ones — "profit per
+  reward dollar" means the same thing either way. Reusing both instead
+  of writing parallel "actual" versions is what keeps a projected
+  number and its actual counterpart from ever quietly disagreeing about
+  what the formula even is.
+- **`get-challenge-roi.ts`** (server-only) — supplies real before/after
+  inputs to `compute-roi.ts` for one already-`completed` challenge:
+  `beforeValue` is `challenges.baseline_value` (real since Phase 7);
+  `afterValue` is the location-level `metric_snapshot` the metric engine
+  most recently computed for that location/metric — the same "current"
+  value the leak detector and a team goal's tracking already read, just
+  read here as "where the metric ended up." No such snapshot yet (a
+  challenge that hit its `end_date` with no real POS data ever
+  imported) returns `dataAvailable: false` with everything zeroed,
+  never a fabricated number. Reward cost is the real `point_ledger`
+  dollar total this specific challenge's tiers and team goal actually
+  paid out (summed by querying `source_type in ('challenge_tier',
+  'team_goal')` against that challenge's own tier/team-goal ids) — the
+  *actual* cost, deliberately not the `challenges.reward_budget`
+  estimate captured at launch.
+- **`revenue-leaks/avg-item-price.ts`** — the attached-item pricing
+  lookup `calculateOpportunity`'s `avg_attached_item_price` input needs,
+  extracted out of `detect.ts` (which now calls it too, wrapped in its
+  own per-run cache) so the projected and actual formulas price an item
+  the exact same way instead of two copies of the same category-rule
+  filter drifting apart.
+
+**Wired to two read paths, no write/trigger of its own** — unlike every
+other engine, nothing about a challenge completing needs a Phase 9 job
+to run; Phase 7's `update-progress.ts` flipping `challenges.status` to
+`completed` is what makes a real report available the next time either
+reader runs:
+
+- `getChallengeRoi(organizationId, challengeId)`
+  (`src/lib/data/manager.ts`) — single-challenge report, returns `null`
+  for any status but `completed` so the challenge detail page can show
+  "available once this challenge completes" instead of a premature
+  number, and renders the before/after values, actual revenue/profit
+  recovered, real reward cost, and the ROI multiplier
+  (`src/components/manager/stat-card.tsx` tiles) once it does.
+- `getOpportunitySummary(organizationId)` — the same Manager Home
+  aggregate that's existed since Phase 2, with `recoveredContributionProfit`/
+  `rewardRoi` now real: summed across every completed challenge's own
+  `computeChallengeRoi` call, `null` only when no challenge has
+  completed yet (distinct from a real, measured zero).
+
+Every number here carries the same estimate framing as everywhere else
+in this app (CLAUDE.md rule #5) — it's a real formula fed real inputs,
+not a guarantee, and the UI copy says so.
 
 ## Gamification engine
 

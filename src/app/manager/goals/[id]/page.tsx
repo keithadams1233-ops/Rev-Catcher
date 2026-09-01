@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentProfile } from "@/lib/auth/get-current-profile";
-import { getChallenge } from "@/lib/data/manager";
+import { getChallenge, getChallengeRoi } from "@/lib/data/manager";
 import { StatusBadge } from "@/components/manager/status-badge";
 import { StatCard } from "@/components/manager/stat-card";
 import { ProgressBar, progressPercent } from "@/components/manager/progress-bar";
@@ -10,6 +10,7 @@ import { UpdateProgressButton } from "@/components/manager/update-progress-butto
 import {
   formatCurrency,
   formatMetricValue,
+  formatMultiplier,
   isDollarMetric,
   metricName,
 } from "@/lib/format";
@@ -22,6 +23,8 @@ export default async function ChallengeDetailPage({ params }: { params: Promise<
 
   const challenge = await getChallenge(profile.organization_id, id);
   if (!challenge) notFound();
+
+  const roi = challenge.status === "completed" ? await getChallengeRoi(profile.organization_id, id) : null;
 
   const dollar = isDollarMetric(challenge.metricCode);
   const fmt = (v: number) => formatMetricValue(challenge.metricCode, v);
@@ -148,6 +151,50 @@ export default async function ChallengeDetailPage({ params }: { params: Promise<
           </table>
         </div>
       </section>
+
+      {challenge.status === "completed" && (
+        <section className="rounded-2xl border border-manager-border bg-manager-surface p-4">
+          <h2 className="text-sm font-semibold text-manager-text">ROI report</h2>
+          <p className="mt-1 text-xs text-manager-muted">
+            Estimated — before/after measurement from real POS data, not a guarantee.
+          </p>
+
+          {!roi || !roi.dataAvailable ? (
+            <p className="mt-3 text-sm text-manager-muted">
+              No real POS data was recorded for {challenge.locationName} on{" "}
+              {metricName(challenge.metricCode)} during this challenge, so an actual before/after
+              measurement isn&apos;t available. The reward cost below still reflects real points
+              paid out.
+              {roi && roi.actualRewardCost > 0 && (
+                <span className="mt-2 block font-medium text-manager-text">
+                  Reward cost: {formatCurrency(roi.actualRewardCost)}
+                </span>
+              )}
+            </p>
+          ) : (
+            <>
+              <div className="mt-3 flex items-center justify-between text-xs text-manager-muted">
+                <span>Before {fmt(roi.beforeValue)}</span>
+                <span>After {fmt(roi.afterValue)}</span>
+              </div>
+              <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <StatCard
+                  label="Actual revenue recovered"
+                  value={formatCurrency(roi.actualIncrementalRevenue)}
+                  tone="positive"
+                />
+                <StatCard
+                  label="Actual profit recovered"
+                  value={formatCurrency(roi.actualContributionProfit)}
+                  tone="positive"
+                />
+                <StatCard label="Reward cost" value={formatCurrency(roi.actualRewardCost)} />
+                <StatCard label="Reward ROI" value={formatMultiplier(roi.rewardRoi)} />
+              </section>
+            </>
+          )}
+        </section>
+      )}
 
       <div className="flex items-center gap-3">
         {challenge.status === "active" && <UpdateProgressButton />}

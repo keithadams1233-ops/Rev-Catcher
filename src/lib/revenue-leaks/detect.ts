@@ -1,11 +1,11 @@
 import "server-only";
 
 import { createServiceRoleClient } from "@/lib/supabase/server";
-import { DETECTOR_METRIC_CODES, type DetectorMetricCode, type EngineTransactionItem } from "@/lib/metrics/types";
-import { DEFAULT_ATTACHMENT_RULES, itemIsTargetAttachment } from "@/lib/metrics/category-rules";
+import { DETECTOR_METRIC_CODES, type DetectorMetricCode } from "@/lib/metrics/types";
 import { computeBenchmark } from "./benchmark";
 import { calculateOpportunity, extrapolateEligiblePerMonth } from "./opportunity";
 import { classifyConfidence } from "./confidence";
+import { getAvgAttachedItemPrice } from "./avg-item-price";
 import type { Tables } from "@/lib/types/database";
 
 type ServiceClient = ReturnType<typeof createServiceRoleClient>;
@@ -62,41 +62,23 @@ export async function detectRevenueLeaks(organizationId: string): Promise<Detect
     else byMetric.set(code, [s]);
   }
 
-  const itemCache = new Map<string, EngineTransactionItem[]>();
-  const getAvgAttachedItemPrice = async (
+  // One price lookup per (location, metric) per detection run, even
+  // though several snapshots (org/location/employee grain) could ask for
+  // the same pair -- `getAvgAttachedItemPrice` itself doesn't cache, so
+  // this run-scoped cache is what keeps a big org's detection pass from
+  // re-querying transaction_items redundantly.
+  const priceCache = new Map<string, number>();
+  const cachedAvgAttachedItemPrice = async (
     locationId: string,
     metricCode: Exclude<DetectorMetricCode, "average_ticket">,
   ): Promise<number> => {
-    let items = itemCache.get(locationId);
-    if (!items) {
-      const { data, error: itemsError } = await supabase
-        .from("transaction_items")
-        .select("category, modifier_names, unit_price")
-        .eq("organization_id", organizationId)
-        .eq("location_id", locationId)
-        .eq("voided", false)
-        .eq("refunded", false)
-        .limit(5000);
-      if (itemsError) throw itemsError;
-      items = (data ?? []).map((i) => ({
-        category: i.category,
-        itemName: "",
-        modifierNames: i.modifier_names,
-        quantity: 0,
-        totalPrice: 0,
-        voided: false,
-        refunded: false,
-        unitPrice: i.unit_price,
-      })) as (EngineTransactionItem & { unitPrice: number })[];
-      itemCache.set(locationId, items);
-    }
+    const key = `${locationId}:${metricCode}`;
+    const cached = priceCache.get(key);
+    if (cached !== undefined) return cached;
 
-    const rule = DEFAULT_ATTACHMENT_RULES[metricCode];
-    const matching = items.filter((i) => itemIsTargetAttachment(i, rule)) as (EngineTransactionItem & {
-      unitPrice: number;
-    })[];
-    if (matching.length === 0) return 0;
-    return matching.reduce((sum, i) => sum + i.unitPrice, 0) / matching.length;
+    const price = await getAvgAttachedItemPrice(supabase, organizationId, locationId, metricCode);
+    priceCache.set(key, price);
+    return price;
   };
 
   const summary: DetectionSummary = { leaksCreated: 0, leaksUpdated: 0, leaksResolved: 0 };
@@ -109,7 +91,7 @@ export async function detectRevenueLeaks(organizationId: string): Promise<Detect
       if (snapshot.denominator < MIN_DENOMINATOR_TO_REPORT) continue;
 
       const avgAttachedItemPrice =
-        metricCode === "average_ticket" ? 0 : await getAvgAttachedItemPrice(snapshot.location_id, metricCode);
+        metricCode === "average_ticket" ? 0 : await cachedAvgAttachedItemPrice(snapshot.location_id, metricCode);
       if (metricCode !== "average_ticket" && avgAttachedItemPrice === 0) continue; // no pricing data to estimate revenue from
 
       const eligibleTransactionsPerMonth = extrapolateEligiblePerMonth(
